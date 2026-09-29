@@ -32,3 +32,7 @@ A few Databricks words, defined once:
 ## Act 3: Train on Databricks GPUs
 
 `databricks bundle run sft_train --params max_steps=5` is the smoke run; `max_steps=0` is the full run. The job reads the training examples the labels selected, fine-tunes Qwen3-4B with supervised fine-tuning on one H100, logs the run to MLflow, and registers `<catalog>.agent_sessions.agent_qwen3_4b` in Unity Catalog.
+
+## Act 4: Prove it
+
+`databricks bundle run eval_models` scores the base model and the fine-tuned one against the same eval cases. Each case is a moment an engineer had to correct an agent, or a session someone labeled `golden` or `regression`. Compare the `eval-base` and `eval-tuned` runs in MLflow.
