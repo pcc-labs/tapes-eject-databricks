@@ -9,7 +9,9 @@ Paper labels your agent sessions. This demo takes those labels to Databricks, wh
 
 Design: [docs/specs/2026-09-29-databricks-labels-design.md](docs/specs/2026-09-29-databricks-labels-design.md)
 
-Status: design only. No code yet.
+Status: code complete; not yet run end to end against a Databricks workspace. See RUNBOOK.md for the live demo.
+
+Nothing here is a new Paper feature. It builds on Paper's session export, Labels, and the autolabel cassette; "eject" is only the demo's name.
 
 ## Setup
 
@@ -28,6 +30,14 @@ A few Databricks words, defined once:
 - **AI Runtime**: serverless GPUs. You pay only while a job runs.
 - **Job**: a run of a notebook or script on Databricks compute, started from the CLI.
 - **Model Serving**: your model as an HTTPS endpoint.
+
+## Act 1: Capture and label (Paper)
+
+Paper already labels sessions. Show it live: `uv run tapes-eject label apology` finds the label across the 25 newest sessions and writes nothing. `uv run tapes-eject label apology --apply` labels them in Paper, and the chips appear in the console. Mark a few sessions `golden` and one `regression` by hand in the console.
+
+## Act 2: Curate (Paper -> Unity Catalog)
+
+`uv run tapes-eject export` calls Paper's existing session export and Labels (through `paperctl`) for every labeled session; it adds nothing to them. `uv run tapes-eject count` shows what the labels select. `uv run tapes-eject sync` loads the tables, rebuilds the MLflow evaluation dataset, and writes the training examples. Open Catalog → `agent_sessions` to see the tables, their History, and lineage.
 
 ## Act 3: Train on Databricks GPUs
 
