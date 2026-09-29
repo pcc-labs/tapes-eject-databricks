@@ -82,7 +82,7 @@ args = SFTConfig(
 )
 
 run_name = f"sft-{METHOD}-{MAX_STEPS or 'full'}"
-with mlflow.start_run(run_name=run_name):
+with mlflow.start_run(run_name=run_name) as training_run:
     mlflow.log_params({"training_table": f"{CATALOG}.{SCHEMA}.training_input", "examples": len(examples), "base_model": BASE, "method": METHOD})
     trainer = SFTTrainer(model=model, args=args, train_dataset=split["train"], eval_dataset=split["test"], processing_class=tok, peft_config=peft_config)
     trainer.train()
@@ -97,11 +97,17 @@ with mlflow.start_run(run_name=run_name):
 # MAGIC serving endpoint fails to start. Pattern from Databricks' "Serve custom LLMs" docs.
 
 # COMMAND ----------
+import os
 import shutil
+import tempfile
 
 from mlflow.pyfunc.model import ChatCompletionResponse, ChatModel
 
-shutil.copytree(OUT, "agent_model", dirs_exist_ok=True)
+# Stage the weights on local disk, not the notebook's cwd (the bundle's workspace folder,
+# which cannot hold multi-GB files). The directory keeps the name the entrypoint serves.
+staging = tempfile.mkdtemp(dir="/local_disk0" if os.path.isdir("/local_disk0") else None)
+model_dir = os.path.join(staging, "agent_model")
+shutil.copytree(OUT, model_dir)
 
 
 class LLMModel(ChatModel):
@@ -120,11 +126,12 @@ metadata = {
     ),
 }
 
-with mlflow.start_run(run_name=f"{run_name}-register"):
+# Log into the training run itself, so the model links back to the run that produced it.
+with mlflow.start_run(run_id=training_run.info.run_id):
     info = mlflow.pyfunc.log_model(
         name="agent_qwen3_4b",
         python_model=LLMModel(),
-        artifacts={"model_dir": "agent_model"},
+        artifacts={"model_dir": model_dir},
         metadata=metadata,
         extra_pip_requirements=["mlflow==3.12.0"],
     )

@@ -43,6 +43,8 @@ Paper already labels sessions. Show it live: `uv run tapes-eject label apology` 
 
 `databricks bundle run sft_train --params max_steps=5` is the smoke run; `max_steps=0` is the full run. The job reads the training examples the labels selected, fine-tunes Qwen3-4B with supervised fine-tuning on one H100, logs the run to MLflow, and registers `<catalog>.agent_sessions.agent_qwen3_4b` in Unity Catalog.
 
+The GPU jobs are created once in the Databricks UI, because the bundle format has no published setting for serverless GPUs. Follow Task 7 Step 3 (`sft_train`) and Task 8 Step 2 (`eval_models`) in `docs/superpowers/plans/2026-09-29-tapes-eject-databricks.md`. Until then, `databricks bundle run` answers "unknown resource".
+
 ## Act 4: Prove it
 
 `databricks bundle run eval_models` scores the base model and the fine-tuned one against the same eval cases. Each case is a moment an engineer had to correct an agent, or a session someone labeled `golden` or `regression`. Compare the `eval-base` and `eval-tuned` runs in MLflow.

@@ -6,7 +6,7 @@ Only Paper and Databricks appear on screen. Say "a supervised fine-tune of an op
 
 - [ ] `uv run tapes-eject doctor`: all `ok`
 - [ ] The autolabel cassette is running with `TYPESAFE_API_KEY` set
-- [ ] `export`, `sync`, and the full `sft_train` and `eval_models` runs are done. Note the model version and both pass rates here: base ____ / tuned ____
+- [ ] `export` (fills `data/cache/`, so the live re-export is fast), `sync`, and the full `sft_train` and `eval_models` runs are done. Note the model version and both pass rates here: base ____ / tuned ____
 - [ ] `uv run tapes-eject serve --version <v>`, then `ask` once to warm it. Leave it up until the demo.
 - [ ] `uv run tapes-eject spend`: total $____ of $400
 - [ ] Browser tabs: Paper console sessions list; Databricks Catalog → agent_sessions; MLflow experiment /Shared/tapes-eject; the endpoint page
@@ -20,9 +20,9 @@ Only Paper and Databricks appear on screen. Say "a supervised fine-tune of an op
 
 ## Act 2: Databricks turns labels into data (4 min)
 
-1. `uv run tapes-eject export && uv run tapes-eject count`. Read out the counts. They are real numbers.
+1. `uv run tapes-eject export && uv run tapes-eject count`. The full export ran the day before; this one reads unchanged sessions from `data/cache/` and only fetches what changed, including the session you just marked. Read out the counts. They are real numbers.
 2. `uv run tapes-eject sync`
-3. Catalog → `labels` → History: a new version from this sync. Lineage: labels → training_input.
+3. Catalog → `labels` → History: a new version from this sync. The `training_input` table holds the examples the labels selected; its lineage shows the volume file it was loaded from.
 4. MLflow → Datasets → `eval_cases`: the regression you just marked is a new test case.
 
 ## Act 3: Train on Databricks GPUs (3 min, pre-run)
