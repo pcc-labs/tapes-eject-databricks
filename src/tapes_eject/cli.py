@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import config, doctor
+from . import config, curate, doctor
 from .autolabel import Autolabel
 from .export import run_export, write_export
 from .paper import Paper
@@ -47,6 +47,20 @@ def cmd_export(cfg: config.Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_rows(cfg: config.Config) -> tuple[list[dict], list[dict], list[dict]]:
+    d = cfg.data_dir
+    if not (d / "sessions.jsonl").exists():
+        raise SystemExit(f"no export in {d}/: run `tapes-eject export` first")
+    return (curate.read_jsonl(d / "sessions.jsonl"), curate.read_jsonl(d / "turns.jsonl"),
+            curate.read_jsonl(d / "labels.jsonl"))
+
+
+def cmd_count(cfg: config.Config, args: argparse.Namespace) -> int:
+    for key, value in curate.counts(*_load_rows(cfg)).items():
+        print(f"{key:>18}  {value}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tapes-eject")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -61,6 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
     exp = sub.add_parser("export", help="pull labeled sessions from Paper into data/")
     exp.add_argument("--evidence", action="store_true", help="ask the cassette for per-turn evidence")
     exp.set_defaults(fn=cmd_export)
+    sub.add_parser("count", help="how much training and eval data the labels select").set_defaults(
+        fn=cmd_count
+    )
     return p
 
 
