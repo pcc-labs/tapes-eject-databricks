@@ -27,7 +27,7 @@ That shapes every choice:
 
 ### Act 1: Capture and label (Paper)
 
-Real sessions sit in the console. The Auto label button (paperplane#51, autolabel-cassette) applies `pushback`, `apology`, `no-outcome`, and the other detectors. A person marks a handful of sessions `golden` (behavior we want to keep) or `regression` (a failure that must not come back).
+Real sessions sit in the console, already labeled in paperd. Live on stage, the autolabel cassette finds a label across a page of sessions, then applies it: `POST /run` with `apply: false`, show the count, then the same call with `apply: true`. The labels land on the console's own rows. A person marks a handful of sessions `golden` (behavior we want to keep) or `regression` (a failure that must not come back).
 
 Takeaway: labeling is Paper's job. Every downstream act depends on these labels.
 
@@ -84,13 +84,41 @@ labels  ──┼─► 01_export ─► JSONL ─► 02_sync ─► schema agen
           └──────────── optional: tuned endpoint proxied through tapes ◄───────┘
 ```
 
+## Where the data comes from
+
+**paperd is the source of truth.** Every read goes through the local paperd proxy, which supplies auth and routing. Nothing reads the autolabel-cassette repo's `labels/*.jsonl` files, which are that tool's working copy, not the record.
+
+| Need | Surface |
+|---|---|
+| Label names and counts | labels cassette: `list-labels`, `label-usage` |
+| Which sessions, traces (turns), and spans carry a label | labels cassette: `list-label-attachments`, per `primitive_type` (`session`, `trace`, `span`), paged by cursor |
+| The full session record | export cassette / `GET /v1/sessions/{id}/traces`, the same record `paperctl sessions export` writes |
+| Labeling live, and per-turn evidence | autolabel cassette: `POST /v1/cassettes/autolabel/run {label, session_ids, apply}` answers `202 {id}`, then poll `GET /v1/cassettes/autolabel/runs/{id}` for `{state, progress, result}`. The result gives each session's matched turns with their `evidence`. |
+
+**The autolabel cassette is not in the org's deployment yet.** The TKO grant (papercomputeco/cloud#271) was closed, so paperd does not front it. For the demo it runs at its own URL: local `python -m label_sampler serve` on `:9996`, or the EC2 box from autolabel-cassette#4. `TYPESAFE_API_KEY` must be set on it, or `pushback`, `question`, and `observation` answer `needs_judge`. `01_export` takes the cassette's base URL as configuration.
+
+**What paperd holds today** (org `papercomputeco`, read with `paperctl label list` on 2026-09-29):
+
+| Label | Sessions | Turns (traces) | Spans |
+|---|---|---|---|
+| `pushback` | 26 | 42 | 42 |
+| `question` | 21 | 54 | 54 |
+| `observation` | 15 | 29 | 29 |
+| `apology` | 9 | 12 | 12 |
+| `missing-knowledge` | 10 | 25 | 77 |
+| `model-error` | 1 | 2 | 16 |
+| `subagents` | 34 | 45 | 45 |
+| `no-outcome` | 5 | | |
+
+There are also human labels such as `design exploration` and `🦾 Potential Skill`. `golden` and `regression` do not exist yet. A person creates them in the console during Act 1.
+
 ## Components
 
 All live in this repo, `tapes-eject-databricks`.
 
 | Path | What it does |
 |---|---|
-| `01_export.py` | Pulls sessions (full-fidelity export, same shape tapes stores) and their labels from Paper into `data/sessions.jsonl` and `data/labels.jsonl`. |
+| `01_export.py` | Through paperd: lists labels and their attachments at session, trace, and span level, then pulls the full record of every labeled session plus an unlabeled sample. Optionally asks the autolabel cassette (`apply: false`) for per-turn evidence. Writes `data/sessions.jsonl` and `data/labels.jsonl`. |
 | `02_sync.py` | Loads both into the UC tables with `MERGE`, then rebuilds `training_input` and syncs `eval_cases`. |
 | `03_train/` | A Databricks Asset Bundle with the job definition and the SFT script (adapted from Databricks' Qwen3-4B tutorial), started with `databricks bundle run` from the terminal. |
 | `04_eval.py` | Serves or uses the endpoints, runs `mlflow.genai.evaluate` for base and tuned, and prints the comparison and the UI link. |
@@ -101,12 +129,12 @@ All live in this repo, `tapes-eject-databricks`.
 
 - **`sessions`**: one row per session. Columns: `session_id`, `harness`, `model`, `started_at`, `total_cost`, `outcome`, plus a `raw` column holding the export record.
 - **`turns`**: one row per turn. Columns: `session_id`, `turn_id`, `ordinal`, `user_text`, `agent_text`, `raw`.
-- **`labels`**: one row per label attachment. Columns: `session_id`, `turn_id` (nullable), `span_id` (nullable), `label`, `source` (`human` or `auto`), `synced_at`.
-- **`training_input`**: a view with one row per training example in chat-messages format (`messages: [{role, content}]`), the format `SFTTrainer` reads. Labels alone decide inclusion: a session is in if it is labeled `golden`, or it has an outcome and carries no `pushback`, `apology`, or `regression` label. Sessions labeled `regression` stay out of training and only feed `eval_cases`.
-- **`eval_cases`**: one record per `golden` or `regression` session.
-  - `inputs`: the opening user request plus context.
-  - `expectations`, golden: the observed good outcome.
-  - `expectations`, regression: the failure to avoid, from the session's labels.
+- **`labels`**: one row per label attachment, as paperd stores it. Columns: `label`, `primitive_type` (`session`, `trace`, or `span`), `primitive_id`, `session_id`, `turn_id` (the trace id, nullable), `span_id` (nullable), `evidence` (from the autolabel cassette, nullable), `synced_at`.
+- **`training_input`**: a view with one row per training example in chat-messages format (`messages: [{role, content}]`), the format `SFTTrainer` reads. Labels alone decide inclusion: a session is in if it is labeled `golden`, or it has an outcome and carries none of `pushback`, `apology`, `missing-knowledge`, `model-error`, or `regression`. Excluded sessions stay out of training and feed `eval_cases`.
+- **`eval_cases`**: built mostly from labels that already exist, so Act 4 does not wait on new labeling.
+  - **Correction cases.** Each turn labeled `pushback`, `observation`, or `missing-knowledge` becomes a case. `inputs`: the conversation up to the agent turn the engineer corrected. `expectations`: the engineer's correction, which is the fact or direction the agent should have followed without being told. Today that is about 96 turns before de-duplication (42 + 29 + 25).
+  - **`golden` sessions.** `inputs`: the opening request. `expectations`: the observed good outcome.
+  - **`regression` sessions.** `inputs`: the opening request. `expectations`: the failure to avoid.
 
 ## Sync semantics
 
@@ -124,9 +152,9 @@ All live in this repo, `tapes-eject-databricks`.
 
 1. **GPU access.** Act 3 runs on AI Runtime, which has been in public preview since 2026-03-19, in a Databricks free-trial workspace ($400 credits). Free Edition is ruled out because it has no GPUs and no GPU serving. The plan's first task confirms that the trial workspace can start an AI Runtime H100 job. Full fine-tuning a 4B model needs the 80 GB H100. If only A10s are available, switch to LoRA, following Databricks' LoRA tutorial. Last-resort fallback: LoRA SFT on a local RTX 5090, still logging to Databricks MLflow and registering in Unity Catalog. The training script is written so the same code runs in both places.
 2. **Serving a fine-tuned model.** Act 4 needs a GPU Model Serving endpoint for the tuned model. The plan confirms the trial workspace allows one before Act 4 depends on it. If it does not, serve on the 5090 with vLLM and log the evaluation to Databricks MLflow.
-3. **Data volume.** The count of `golden` and `regression` sessions sets how convincing Act 4 is. The runbook states the counts on screen rather than hiding them. The plan's first task counts what exists.
+3. **Data volume.** About 96 correction turns across roughly 50 sessions exist today, which is enough for a credible evaluation set. The SFT set is the open question: it depends on how many sessions have an outcome and no negative label. The plan's first task counts both from paperd. The runbook shows the counts on screen rather than hiding them.
 4. **Labels are free-form.** `golden` and `regression` are ordinary labels a person creates in the console. The Labels feature already supports that. No product change is needed.
-5. **API surface.** Export and label reads use Paper's existing endpoints (session export, and core's `?label=` filter). The plan confirms the exact calls before writing `01_export`.
+5. **Reading through paperd.** Reads use paperd's labels and export cassettes, which paperd authenticates. The autolabel cassette runs outside the deployment (see "Where the data comes from"). The plan's first task confirms both from a script, not only the CLI.
 6. **Omnigent** is out of scope. It can be added once harness support lands.
 
 ## Budget
@@ -141,6 +169,7 @@ Everything fits in the trial's $400. We are showing Databricks at full strength,
 ## Out of scope
 
 - Any change to the console or paperplane.
+- Admitting the autolabel cassette into the org's deployment.
 - DPO or any other preference training.
 - The old Foundation Model Fine-tuning API, which is end-of-life.
 - Writing labels from Databricks back to Paper.
