@@ -7,8 +7,10 @@ import sys
 
 from . import config, curate, doctor
 from .autolabel import Autolabel
+from .databricks_io import Databricks
 from .export import run_export, write_export
 from .paper import Paper
+from .sync import run_sync
 
 
 def cmd_doctor(cfg: config.Config, args: argparse.Namespace) -> int:
@@ -61,6 +63,25 @@ def cmd_count(cfg: config.Config, args: argparse.Namespace) -> int:
     return 0
 
 
+def _mlflow(cfg: config.Config):
+    import mlflow
+
+    mlflow.set_tracking_uri(f"databricks://{cfg.profile}")
+    mlflow.set_registry_uri(f"databricks-uc://{cfg.profile}")
+    mlflow.set_experiment(cfg.experiment)
+    return mlflow
+
+
+def cmd_sync(cfg: config.Config, args: argparse.Namespace) -> int:
+    mlflow = _mlflow(cfg)
+    import mlflow.genai.datasets as datasets
+
+    got = run_sync(cfg, Databricks(cfg), datasets)
+    print(f"{got['training_examples']} training examples, {got['eval_cases']} eval cases in "
+          f"{cfg.catalog}.{cfg.schema} (MLflow {mlflow.__version__})")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tapes-eject")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -77,6 +98,9 @@ def build_parser() -> argparse.ArgumentParser:
     exp.set_defaults(fn=cmd_export)
     sub.add_parser("count", help="how much training and eval data the labels select").set_defaults(
         fn=cmd_count
+    )
+    sub.add_parser("sync", help="load data/ into Unity Catalog and the MLflow eval dataset").set_defaults(
+        fn=cmd_sync
     )
     return p
 
