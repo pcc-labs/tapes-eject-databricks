@@ -122,12 +122,21 @@ All live in this repo, `tapes-eject-databricks`.
 
 ## Risks and decisions
 
-1. **GPU access.** Act 3 runs on AI Runtime, which has been in public preview since 2026-03-19. The workspace needs that preview turned on and H100s available in its region. Full fine-tuning a 4B model needs the 80 GB H100. If only A10s are available, switch to LoRA, following Databricks' LoRA tutorial. Last-resort fallback: train off-platform, but still log to Databricks MLflow and register the model in Unity Catalog. Acts 2 and 4 are unchanged either way.
-2. **Serving a fine-tuned model.** Serving a custom LLM on Model Serving needs GPU serving in the workspace. The plan confirms this before Act 4 depends on it.
+1. **GPU access.** Act 3 runs on AI Runtime, which has been in public preview since 2026-03-19, in a Databricks free-trial workspace ($400 credits). Free Edition is ruled out because it has no GPUs and no GPU serving. The plan's first task confirms that the trial workspace can start an AI Runtime H100 job. Full fine-tuning a 4B model needs the 80 GB H100. If only A10s are available, switch to LoRA, following Databricks' LoRA tutorial. Last-resort fallback: LoRA SFT on a local RTX 5090, still logging to Databricks MLflow and registering in Unity Catalog. The training script is written so the same code runs in both places.
+2. **Serving a fine-tuned model.** Act 4 needs a GPU Model Serving endpoint for the tuned model. The plan confirms the trial workspace allows one before Act 4 depends on it. If it does not, serve on the 5090 with vLLM and log the evaluation to Databricks MLflow.
 3. **Data volume.** The count of `golden` and `regression` sessions sets how convincing Act 4 is. The runbook states the counts on screen rather than hiding them. The plan's first task counts what exists.
 4. **Labels are free-form.** `golden` and `regression` are ordinary labels a person creates in the console. The Labels feature already supports that. No product change is needed.
 5. **API surface.** Export and label reads use Paper's existing endpoints (session export, and core's `?label=` filter). The plan confirms the exact calls before writing `01_export`.
 6. **Omnigent** is out of scope. It can be added once harness support lands.
+
+## Budget
+
+Everything fits in the trial's $400. We are showing Databricks at full strength, so the demo uses their GPUs rather than working around them. Guardrails:
+
+- Training uses a capped `max_steps` and a job timeout. Every run is sized from a short first measurement before any full run.
+- Serving endpoints scale to zero, run only for the Act 4 evaluation and the live demo, and are deleted afterwards.
+- The Act 4 judge uses pay-per-token Foundation Model APIs over a small evaluation set.
+- The plan records actual spend after each act, from Databricks' billing usage table, so we know the headroom before the live demo.
 
 ## Out of scope
 
