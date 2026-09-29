@@ -2,49 +2,193 @@
 
 Paper labels your agent sessions. This demo takes those labels to Databricks, where they become datasets, evals, and a fine-tuned model.
 
-- Act 1: capture and label sessions in Paper
-- Act 2: sync the labeled sessions into Unity Catalog and an MLflow evaluation dataset
-- Act 3: supervised fine-tune (SFT) of Qwen3-4B on Databricks AI Runtime GPUs, using the sessions the labels selected
-- Act 4: evaluate the base and fine-tuned models against `golden` and `regression` cases in MLflow
+- **Act 1:** capture and label sessions in Paper.
+- **Act 2:** sync the labeled sessions into Unity Catalog and an MLflow evaluation dataset.
+- **Act 3:** run a supervised fine-tune (SFT) of Qwen3-4B on Databricks AI Runtime GPUs, using the sessions the labels selected.
+- **Act 4:** score the base and fine-tuned models against the eval cases in MLflow.
 
-Design: [docs/specs/2026-09-29-databricks-labels-design.md](docs/specs/2026-09-29-databricks-labels-design.md)
+Nothing here is a new Paper feature. The demo builds on Paper's session export, Labels, and the autolabel cassette. "Eject" is only the demo's name.
 
-Status: code complete; not yet run end to end against a Databricks workspace. See RUNBOOK.md for the live demo.
+**Status:** code complete, with 57 unit tests passing. It has not yet run end to end against a Databricks workspace. `RUNBOOK.md` is the live demo script. The design is in [docs/specs/2026-09-29-databricks-labels-design.md](docs/specs/2026-09-29-databricks-labels-design.md), and the build plan is in [docs/superpowers/plans/2026-09-29-tapes-eject-databricks.md](docs/superpowers/plans/2026-09-29-tapes-eject-databricks.md).
 
-Nothing here is a new Paper feature. It builds on Paper's session export, Labels, and the autolabel cassette; "eject" is only the demo's name.
+## A few Databricks words
 
-## Setup
-
-You need: a Databricks free-trial workspace (not Free Edition, which has no GPUs), Paper access, and the autolabel cassette running beside this repo.
-
-1. Run every command in "Step 1" of `docs/superpowers/plans/2026-09-29-tapes-eject-databricks.md`.
-2. `cp .env.example .env` and fill in `TAPES_EJECT_CATALOG` and `DATABRICKS_WAREHOUSE_ID`.
-3. `uv sync`
-4. `uv run tapes-eject doctor`. Every line should say `ok`.
-
-A few Databricks words, defined once:
 - **Unity Catalog**: where tables, files, and models live, with permissions and history. Names are `catalog.schema.thing`.
 - **Volume**: a governed folder of files inside Unity Catalog, at `/Volumes/<catalog>/<schema>/<volume>`.
-- **SQL warehouse**: compute that runs SQL. We use it to load tables.
+- **SQL warehouse**: compute that runs SQL. This demo uses it to load tables.
 - **MLflow**: the experiment tracker. It records training runs, evaluation datasets, and scores.
 - **AI Runtime**: serverless GPUs. You pay only while a job runs.
 - **Job**: a run of a notebook or script on Databricks compute, started from the CLI.
 - **Model Serving**: your model as an HTTPS endpoint.
 
-## Act 1: Capture and label (Paper)
+## What you need
 
-Paper already labels sessions. Show it live: `uv run tapes-eject label apology` finds the label across the 25 newest sessions and writes nothing. `uv run tapes-eject label apology --apply` labels them in Paper, and the chips appear in the console. Mark a few sessions `golden` and one `regression` by hand in the console.
+- **A Databricks free-trial workspace, which comes with $400 of credits.** Free Edition won't work because it has no GPUs.
+- **Paper access**, with `paperctl` logged in to the org whose sessions you want to use.
+- **A TypeSafe API key.** The autolabel cassette uses it to judge `pushback`, `question`, and `observation`. Without it, those three labels answer `needs_judge`.
+- **These tools:** `uv`, `gh`, and git.
 
-## Act 2: Curate (Paper -> Unity Catalog)
+## Setup (once per machine)
 
-`uv run tapes-eject export` calls Paper's existing session export and Labels (through `paperctl`) for every labeled session; it adds nothing to them. `uv run tapes-eject count` shows what the labels select. `uv run tapes-eject sync` loads the tables, rebuilds the MLflow evaluation dataset, and writes the training examples. Open Catalog → `agent_sessions` to see the tables, their History, and lineage.
+### 1. Tools and logins
 
-## Act 3: Train on Databricks GPUs
+```bash
+# uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-`databricks bundle run sft_train --params max_steps=5` is the smoke run; `max_steps=0` is the full run. The job reads the training examples the labels selected, fine-tunes Qwen3-4B with supervised fine-tuning on one H100, logs the run to MLflow, and registers `<catalog>.agent_sessions.agent_qwen3_4b` in Unity Catalog.
+# GitHub: the autolabel-cassette dependency is a private pcc-labs repo
+gh auth login
+gh auth setup-git
 
-The GPU jobs are created once in the Databricks UI, because the bundle format has no published setting for serverless GPUs. Follow Task 7 Step 3 (`sft_train`) and Task 8 Step 2 (`eval_models`) in `docs/superpowers/plans/2026-09-29-tapes-eject-databricks.md`. Until then, `databricks bundle run` answers "unknown resource".
+# Paper
+paperctl login
+paperctl init
+paperctl status      # expect "auth: healthy"
+paperctl whoami      # note org_slug (papercomputeco is zro54)
 
-## Act 4: Prove it
+# Databricks CLI, logged in to your trial workspace
+curl -fsSL https://raw.githubusercontent.com/databricks/setup-cli/main/install.sh | sh
+databricks auth login --host https://<your-workspace>.cloud.databricks.com --profile tapes-eject
+databricks warehouses list --profile tapes-eject   # note the SQL warehouse id
+databricks catalogs list --profile tapes-eject     # pick a catalog you can create a schema in
+```
 
-`databricks bundle run eval_models` scores the base model and the fine-tuned one against the same eval cases. Each case is a moment an engineer had to correct an agent, or a session someone labeled `golden` or `regression`. Compare the `eval-base` and `eval-tuned` runs in MLflow.
+### 2. The autolabel cassette, beside this repo
+
+Keep it running in its own terminal for the whole demo.
+
+```bash
+git clone https://github.com/pcc-labs/autolabel-cassette ../autolabel-cassette
+cd ../autolabel-cassette
+uv sync
+printf 'LABEL_SAMPLER_ORG=zro54\nTYPESAFE_API_KEY=<key>\n' > .env
+uv run python -m label_sampler serve   # http://127.0.0.1:9996/v1/cassettes/autolabel
+```
+
+### 3. This repo
+
+```bash
+git clone https://github.com/pcc-labs/tapes-eject-databricks
+cd tapes-eject-databricks
+cp .env.example .env    # fill in TAPES_EJECT_CATALOG and DATABRICKS_WAREHOUSE_ID
+uv sync
+uv run tapes-eject doctor
+```
+
+`doctor` checks seven things: paperd, your Paper org, the cassette (including that its org matches), Databricks auth, the SQL warehouse, the catalog, and MLflow. Every line should say `ok` before you go on.
+
+### 4. Check that the workspace has GPUs
+
+1. In the workspace UI, go to **New → Notebook**.
+2. In the compute selector, pick **Serverless GPU**.
+3. In the Environment panel, choose accelerator **1xH100** and environment **AI v6**, then click **Apply**.
+4. Run a cell containing `%sh nvidia-smi`. You should see `NVIDIA H100 80GB HBM3`.
+
+If only **A10** is offered, use it, and pass `method=lora` to the training job in Act 3.
+
+### 5. Create the two GPU jobs (once)
+
+The bundle format has no published setting for serverless-GPU compute, so each job is created once in the UI and then pulled into the bundle.
+
+```bash
+databricks bundle deploy    # uploads train/ to your workspace under .bundle/tapes-eject-databricks/demo/files/
+```
+
+In the UI, go to **Jobs & Pipelines → Create → Job** and create these two:
+
+| Job | Notebook | Compute | Parameters |
+|---|---|---|---|
+| `sft_train` | `train/sft_train` from the bundle files | Serverless GPU, **1xH100**, AI v6, 2 h timeout | `catalog=<catalog>` `schema=agent_sessions` `max_steps=5` `method=full` `min_examples=20` `base_model=Qwen/Qwen3-4B` `experiment=/Shared/tapes-eject` |
+| `eval_models` | `train/eval_models` from the bundle files | Serverless GPU, **A10**, AI v6, 2 h timeout | `catalog=<catalog>` `schema=agent_sessions` `base_model=Qwen/Qwen3-4B` `experiment=/Shared/tapes-eject` `limit=5` |
+
+Then bring both jobs under the bundle:
+
+```bash
+databricks bundle generate job --existing-job-id <SFT_JOB_ID> --key sft_train
+databricks bundle deployment bind sft_train <SFT_JOB_ID> --auto-approve
+databricks bundle generate job --existing-job-id <EVAL_JOB_ID> --key eval_models
+databricks bundle deployment bind eval_models <EVAL_JOB_ID> --auto-approve
+databricks bundle deploy
+```
+
+`generate` may also download a copy of the notebook. If it does, point the job YAML's `notebook_path` at `../train/sft_train.py` (or `../train/eval_models.py`), delete the downloaded copy, and run `databricks bundle deploy` again.
+
+## Running the demo
+
+### Act 1: Capture and label (Paper)
+
+```bash
+uv run tapes-eject label apology            # finds the label across the 25 newest sessions; writes nothing
+uv run tapes-eject label apology --apply    # labels them in Paper; the chips appear in the console
+```
+
+You can use any of the seven labels: `apology`, `dream`, `subagents`, `no-outcome`, `pushback`, `question`, `observation`. In the console, also mark a few good sessions `golden` and one failure `regression` by hand.
+
+### Act 2: Curate (Paper → Unity Catalog)
+
+```bash
+uv run tapes-eject export   # Paper's session export + Labels for every labeled session, into data/
+uv run tapes-eject count    # what the labels select: training examples, eval cases, golden, regression
+uv run tapes-eject sync     # tables + training examples into Unity Catalog, eval cases into MLflow
+```
+
+- **`export`** caches each session in `data/cache/`, so re-running it only fetches sessions that changed. It exits non-zero if any export failed or any outcome is unknown. `data/report.json` says which.
+- **`sync`** refuses a partial or empty export, because syncing one would wipe good data. Re-run `export`, or pass `--force` if you mean it.
+- **What to open afterwards:** Catalog → your catalog → `agent_sessions`, where `labels` → History shows one version per sync. Then MLflow → Datasets → `eval_cases`.
+
+How the labels decide the data:
+- **Training data:** sessions that produced an outcome and carry no `pushback`, `apology`, `missing-knowledge`, `model-error`, `observation`, or `regression` label. Four in five `golden` sessions are training data too.
+- **Eval cases:** every turn an engineer corrected (`pushback`, `observation`, `missing-knowledge`), every `regression` session, and the other one in five `golden` sessions. A session is never both training data and an eval case.
+
+### Act 3: Train on Databricks GPUs
+
+```bash
+databricks bundle run sft_train --params max_steps=5    # smoke run; check the cost first
+uv run tapes-eject spend                                # spend so far, out of $400
+databricks bundle run sft_train --params max_steps=0    # full run: 2 epochs
+```
+
+The job fine-tunes Qwen3-4B on the training examples, logs the run to MLflow experiment `/Shared/tapes-eject`, and registers `<catalog>.agent_sessions.agent_qwen3_4b` in Unity Catalog. If the full fine-tune runs out of memory, add `method=lora`.
+
+### Act 4: Prove it
+
+```bash
+databricks bundle run eval_models --params limit=5    # smoke run on 5 cases
+databricks bundle run eval_models --params limit=0    # every case
+```
+
+In MLflow, select the `eval-base` and `eval-tuned` runs and choose **Compare**. The guideline pass rate is the Act 4 number.
+
+To show the fine-tuned model live:
+
+```bash
+uv run tapes-eject serve --version <model version>    # A10 endpoint; scales to zero; a cold start takes minutes
+uv run tapes-eject ask "Add a --dry-run flag to the export command"
+uv run tapes-eject unserve                            # delete it when the demo is over
+```
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `doctor` | Checks paperd, the cassette, and the Databricks workspace |
+| `label <name> [--apply]` | Finds a label across recent sessions through the autolabel cassette; `--apply` writes it to Paper |
+| `export [--evidence] [--allow-partial]` | Pulls labeled sessions and their labels from Paper into `data/` |
+| `count` | Shows how much training and eval data the labels select |
+| `sync [--force]` | Loads `data/` into Unity Catalog and the MLflow evaluation dataset |
+| `serve --version N` / `unserve` / `ask "<prompt>"` | Creates, deletes, and queries the fine-tuned model's endpoint |
+| `spend [--since YYYY-MM-DD]` | Shows Databricks spend from the system billing tables |
+
+Run any of these as `uv run tapes-eject <command>`. The unit tests run with `uv run pytest`.
+
+## Troubleshooting
+
+- **`export` fails with "could not reach the tapes API".** Paper's session export endpoint isn't answering. Check with `paperctl sessions export <id>` directly. `sessions list` can work while export is down. Wait for it to recover, then re-run: cached sessions are not fetched again.
+- **`label` or `export` prints `needs_judge`.** The cassette has no `TYPESAFE_API_KEY`. Set it in `../autolabel-cassette/.env` and restart the cassette.
+- **`doctor` says the cassette org doesn't match.** Set `LABEL_SAMPLER_ORG` in the cassette's `.env` to your `org_slug`.
+- **`sync` says it is "refusing to sync".** The export was partial, or it produced no eval cases. Read `data/report.json`.
+- **`bundle run` says "unknown resource".** The GPU jobs haven't been created yet. See Setup step 5.
+- **`sft_train` fails with "only N training examples".** Mark more good sessions `golden` in Paper, then run `export` and `sync` again.
+- **`spend` says the billing tables are unavailable.** Use Account console → Usage instead.
+
+After the demo, run `uv run tapes-eject unserve` and check `uv run tapes-eject spend`.
