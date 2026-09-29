@@ -6,6 +6,8 @@ import argparse
 import sys
 
 from . import config, doctor
+from .autolabel import Autolabel
+from .paper import Paper
 
 
 def cmd_doctor(cfg: config.Config, args: argparse.Namespace) -> int:
@@ -16,12 +18,33 @@ def cmd_doctor(cfg: config.Config, args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def cmd_label(cfg: config.Config, args: argparse.Namespace) -> int:
+    """Find a label across the newest sessions; with --apply, label them in Paper."""
+    ids = [s["id"] for s in Paper(org_slug=cfg.org_slug).sessions(limit=args.sessions)]
+    client = Autolabel(cfg.autolabel_url)
+    res = client.run(args.name, ids, apply=False, on_progress=lambda p: print(f"  {p}"))
+    if res.get("reason"):
+        print(f"{args.name}: {res['reason']}")
+        return 1
+    print(f"{args.name} found in {res['matched']} of {len(ids)} sessions")
+    if not args.apply or not res["matched"]:
+        return 0
+    done = client.run(args.name, ids, apply=True, on_progress=lambda p: print(f"  {p}"))
+    print(f"{args.name}: {done['created']} new labels, {done['pushed']} pushed to Paper")
+    return 0 if not done["push_failed"] else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tapes-eject")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("doctor", help="check paperd, the cassette, and the workspace").set_defaults(
         fn=cmd_doctor
     )
+    lab = sub.add_parser("label", help="Act 1: find a label across recent sessions, then apply it")
+    lab.add_argument("name", help="apology, dream, subagents, no-outcome, pushback, question, observation")
+    lab.add_argument("--sessions", type=int, default=25)
+    lab.add_argument("--apply", action="store_true", help="write the labels to Paper")
+    lab.set_defaults(fn=cmd_label)
     return p
 
 
