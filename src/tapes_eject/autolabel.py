@@ -75,12 +75,26 @@ class Autolabel:
             raise AutolabelError(f"run {job.get('id')} {job['state']}: {job.get('error', '')}")
         return job["result"]
 
-    def matched_sessions(self, label: str, session_ids: list[str], chunk: int = 25) -> set[str]:
+    def matched_sessions(
+        self, label: str, session_ids: list[str], chunk: int = 25
+    ) -> tuple[set[str], set[str]]:
+        """(matched, unknown). A chunk whose run fails, and any session the cassette could not
+        read, is unknown rather than failing the whole call. A `reason` means the label cannot
+        run at all (e.g. needs_judge) and raises."""
         hit: set[str] = set()
+        unknown: set[str] = set()
         for i in range(0, len(session_ids), chunk):
-            res = self.run(label, session_ids[i : i + chunk])
+            part = session_ids[i : i + chunk]
+            try:
+                res = self.run(label, part)
+            except AutolabelError:
+                unknown |= set(part)
+                continue
+            if res.get("reason"):
+                raise AutolabelError(f"{label}: {res['reason']}")
+            unknown |= set(res.get("missing") or [])
             hit |= {s["session_id"] for s in res["sessions"] if s["matched"]}
-        return hit
+        return hit, unknown
 
     def turn_evidence(
         self, label: str, session_ids: list[str], chunk: int = 25

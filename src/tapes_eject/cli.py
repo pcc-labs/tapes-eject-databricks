@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
 from . import config, curate, doctor, serve
 from .autolabel import Autolabel
 from .databricks_io import Databricks
-from .export import run_export, write_export
+from .export import problems, run_export, write_export
 from .paper import Paper
 from .sync import run_sync
 
@@ -37,16 +38,33 @@ def cmd_label(cfg: config.Config, args: argparse.Namespace) -> int:
     return 0 if not done["push_failed"] else 1
 
 
+def export_status(report: dict, allow_partial: bool) -> int:
+    issues = problems(report)
+    for issue in issues:
+        print(f"problem: {issue}")
+    if issues and not allow_partial:
+        print("sync will refuse this export; rerun `export`, or pass --allow-partial to accept it")
+        return 1
+    return 0
+
+
 def cmd_export(cfg: config.Config, args: argparse.Namespace) -> int:
     paper = Paper(org_slug=cfg.org_slug)
-    ex = run_export(paper, Autolabel(cfg.autolabel_url), cfg, with_evidence=args.evidence)
+    ex = run_export(
+        paper,
+        Autolabel(cfg.autolabel_url),
+        cfg,
+        with_evidence=args.evidence,
+        cache_dir=cfg.data_dir / "cache",
+    )
     write_export(ex, cfg.data_dir)
     print(
         f"{len(ex.sessions)} sessions, {len(ex.turns)} turns, {len(ex.labels)} labels "
-        f"-> {cfg.data_dir}/ ({len(ex.failed)} failed/skipped, {len(ex.unmapped)} unmapped labels; "
-        f"see report.json)"
+        f"-> {cfg.data_dir}/ ({len(ex.failed)} failed, {len(ex.skipped)} skipped, "
+        f"{len(ex.unmapped)} unmapped labels; see report.json)"
     )
-    return 0
+    report = json.loads((cfg.data_dir / "report.json").read_text(encoding="utf-8"))
+    return export_status(report, args.allow_partial)
 
 
 def _load_rows(cfg: config.Config) -> tuple[list[dict], list[dict], list[dict]]:
@@ -79,7 +97,7 @@ def cmd_sync(cfg: config.Config, args: argparse.Namespace) -> int:
     mlflow = _mlflow(cfg)
     import mlflow.genai.datasets as datasets
 
-    got = run_sync(cfg, Databricks(cfg), datasets)
+    got = run_sync(cfg, Databricks(cfg), datasets, force=args.force)
     print(
         f"{got['training_examples']} training examples, {got['eval_cases']} eval cases in "
         f"{cfg.catalog}.{cfg.schema} (MLflow {mlflow.__version__})"
@@ -143,13 +161,16 @@ def build_parser() -> argparse.ArgumentParser:
     exp.add_argument(
         "--evidence", action="store_true", help="ask the cassette for per-turn evidence"
     )
+    exp.add_argument(
+        "--allow-partial", action="store_true", help="exit 0 even if some exports failed"
+    )
     exp.set_defaults(fn=cmd_export)
     sub.add_parser("count", help="how much training and eval data the labels select").set_defaults(
         fn=cmd_count
     )
-    sub.add_parser(
-        "sync", help="load data/ into Unity Catalog and the MLflow eval dataset"
-    ).set_defaults(fn=cmd_sync)
+    sy = sub.add_parser("sync", help="load data/ into Unity Catalog and the MLflow eval dataset")
+    sy.add_argument("--force", action="store_true", help="sync even a partial or empty export")
+    sy.set_defaults(fn=cmd_sync)
     sv = sub.add_parser("serve", help="create the tuned model's endpoint (A10, scales to zero)")
     sv.add_argument("--version", type=int, required=True)
     sv.set_defaults(fn=cmd_serve)

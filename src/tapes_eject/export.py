@@ -1,12 +1,15 @@
 """Paper -> redacted rows. Labels come from paperd; outcomes from the autolabel cassette.
 
-Session text is parsed and redacted by label_sampler (the autolabel cassette's own parser), so
-nothing written here carries a secret-shaped string. Raw records are never written.
+Session text is parsed and redacted by label_sampler (the autolabel cassette's own parser), then
+scrubbed again here for shapes it misses. Redaction is pattern-based: it lowers the risk of a
+secret reaching Databricks, it does not remove it. Raw records are only kept in the local export
+cache (data/cache/, git-ignored) and are never uploaded.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,7 +32,37 @@ class Export:
     labels: list[dict]
     failed: list[tuple[str, str]] = field(default_factory=list)
     unmapped: list[dict] = field(default_factory=list)
-    outcome_known: bool = True
+    skipped: list[tuple[str, str]] = field(default_factory=list)
+    outcome_unknown: int = 0
+
+    @property
+    def outcome_known(self) -> bool:
+        return self.outcome_unknown == 0
+
+
+REDACTED = "[redacted]"
+_EXTRA_SECRETS = [
+    # JSON-quoted secrets: {"api_key": "..."}
+    (
+        re.compile(
+            r'(?i)("[\w-]*(?:api[_-]?key|secret|token|password|passwd)"\s*:\s*")[^"]{8,}(")'
+        ),
+        rf"\1{REDACTED}\2",
+    ),
+    # URL userinfo: scheme://user:password@host
+    (re.compile(r"(\b[a-z][a-z0-9+.-]*://[^\s:/@]+:)[^\s@/]+(@)"), rf"\1{REDACTED}\2"),
+    # Databricks personal access tokens
+    (re.compile(r"\bdapi[0-9a-f]{32}\b"), REDACTED),
+    # Stripe-style keys
+    (re.compile(r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{10,}"), REDACTED),
+]
+
+
+def scrub(text: str) -> str:
+    """A second pass for secret shapes label_sampler.redact does not cover."""
+    for pattern, repl in _EXTRA_SECRETS:
+        text = pattern.sub(repl, text)
+    return text
 
 
 def index_record(record: dict) -> tuple[str, dict[str, str], dict[str, str]]:
@@ -66,7 +99,8 @@ def label_rows(
                 sid = trace_session.get(pid)
             elif ptype == "span":
                 spid = pid
-                tid = span_trace.get(pid)
+                # Paper names a span `<trace id>~<span id>`; older ids are bare span ids.
+                tid = pid.split("~", 1)[0] if "~" in pid else span_trace.get(pid)
                 sid = trace_session.get(tid) if tid else None
             else:
                 continue  # skills and other primitives are not session data
@@ -85,17 +119,17 @@ def label_rows(
     return rows, unmapped
 
 
-def session_row(sess: Session, no_outcome: set[str] | None) -> dict:
+def session_row(sess: Session, no_outcome: set[str], unknown: set[str] = frozenset()) -> dict:
     return {
         "session_id": sess.id,
-        "title": sess.title,
+        "title": scrub(sess.title),
         "harness": sess.harness,
         "model": sess.model,
         "started_at": sess.started_at,
         "status": sess.status,
         "turn_count": sess.turn_count,
         "cost_usd": sess.cost_usd,
-        "has_outcome": None if no_outcome is None else sess.id not in no_outcome,
+        "has_outcome": False if sess.id in no_outcome else (None if sess.id in unknown else True),
     }
 
 
@@ -105,8 +139,8 @@ def turn_rows(sess: Session) -> list[dict]:
             "session_id": sess.id,
             "turn_id": t.id,
             "ordinal": t.index,
-            "user_prompt": t.user_prompt,
-            "agent_text": "\n\n".join(t.assistant_text) or t.response_preview,
+            "user_prompt": scrub(t.user_prompt),
+            "agent_text": scrub("\n\n".join(t.assistant_text) or t.response_preview),
             "synthetic": t.synthetic,
         }
         for t in sess.turns
@@ -136,8 +170,39 @@ def choose_sessions(
     return ids + extra[:sample], skipped
 
 
+def _cached_export(paper, sid: str, seen: str | None, cache_dir: Path | None) -> dict | None:
+    """The session's record, from the local cache when Paper says it has not changed."""
+    path = cache_dir / f"{sid}.json" if cache_dir and seen else None
+    if path and path.exists():
+        cached = json.loads(path.read_text(encoding="utf-8"))
+        if cached.get("last_seen_at") == seen:
+            return cached["record"]
+    rec = paper.export_session(sid)
+    if rec and path:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"last_seen_at": seen, "record": rec}), encoding="utf-8")
+    return rec
+
+
+def problems(report: dict) -> list[str]:
+    """Why an export should not be synced as-is. Empty means it is safe to sync."""
+    out: list[str] = []
+    if report.get("failed"):
+        out.append(f"{len(report['failed'])} session exports failed")
+    if not report.get("sessions"):
+        out.append("no sessions exported")
+    if report.get("outcome_unknown"):
+        out.append(f"outcome unknown for {report['outcome_unknown']} sessions")
+    return out
+
+
 def run_export(
-    paper, autolabel, cfg: Config, with_evidence: bool = False, log: Callable[[str], None] = print
+    paper,
+    autolabel,
+    cfg: Config,
+    with_evidence: bool = False,
+    log: Callable[[str], None] = print,
+    cache_dir: Path | None = None,
 ) -> Export:
     labels = [lab for lab in paper.labels() if any((lab.get("usage") or {}).get(t) for t in LEVELS)]
     attachments = {
@@ -156,7 +221,9 @@ def run_export(
                 labeled[it["id"]] = it
     since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     recent = paper.sessions(since=since, limit=cfg.sample_sessions * 3)
-    ids, failed = choose_sessions(labeled, recent, cfg.sample_sessions, cfg.max_turns)
+    ids, skipped = choose_sessions(labeled, recent, cfg.sample_sessions, cfg.max_turns)
+    items = {**{it["id"]: it for it in recent}, **labeled}
+    failed: list[tuple[str, str]] = []
 
     parsed: dict[str, Session] = {}
     trace_session: dict[str, str] = {}
@@ -164,7 +231,7 @@ def run_export(
     for i, sid in enumerate(ids, 1):
         log(f"[{i}/{len(ids)}] export {sid}")
         try:
-            rec = paper.export_session(sid)
+            rec = _cached_export(paper, sid, items.get(sid, {}).get("last_seen_at"), cache_dir)
         except PaperError as e:
             failed.append((sid, str(e)))
             continue
@@ -177,11 +244,21 @@ def run_export(
         if sess is not None:
             parsed[sess.id] = sess
 
-    no_outcome: set[str] | None = None
+    # Paper's own no-outcome label is the record; the cassette's detector fills in the rest.
+    no_outcome = {
+        a["primitive_id"]
+        for a in attachments.get(NO_OUTCOME, [])
+        if a["primitive_type"] == "session"
+    }
     try:
-        no_outcome = autolabel.matched_sessions(NO_OUTCOME, list(parsed))
+        found, unknown = autolabel.matched_sessions(NO_OUTCOME, list(parsed))
+        no_outcome |= found
     except AutolabelError as e:
-        log(f"warning: {e}. Outcome unknown: only `golden` sessions can be training data.")
+        unknown = set(parsed)
+        log(f"warning: {e}")
+    unknown -= no_outcome
+    if unknown:
+        log(f"warning: outcome unknown for {len(unknown)} sessions; they are not training data")
 
     evidence: dict[tuple[str, str], str] = {}
     if with_evidence:
@@ -197,12 +274,13 @@ def run_export(
 
     rows, unmapped = label_rows(attachments, trace_session, span_trace, evidence)
     return Export(
-        sessions=[session_row(s, no_outcome) for s in parsed.values()],
+        sessions=[session_row(s, no_outcome, unknown) for s in parsed.values()],
         turns=[r for s in parsed.values() for r in turn_rows(s)],
         labels=rows,
         failed=failed,
         unmapped=unmapped,
-        outcome_known=no_outcome is not None,
+        skipped=skipped,
+        outcome_unknown=len(unknown),
     )
 
 
@@ -222,9 +300,10 @@ def write_export(ex: Export, data_dir: Path) -> None:
         "turns": len(ex.turns),
         "labels": len(ex.labels),
         "failed": ex.failed,
+        "skipped": ex.skipped,
         "unmapped": len(ex.unmapped),
         "unmapped_by_label": _count(r["label"] for r in ex.unmapped),
-        "outcome_known": ex.outcome_known,
+        "outcome_unknown": ex.outcome_unknown,
     }
     (data_dir / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 

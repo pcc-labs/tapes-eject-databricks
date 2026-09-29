@@ -68,14 +68,45 @@ def test_matched_sessions_chunks_and_unions():
         {
             "id": "b",
             "state": "done",
-            "result": result([{"session_id": "s3", "matched": True, "turns": []}]),
+            "result": result(
+                [
+                    {"session_id": "s3", "matched": True, "turns": []},
+                ]
+            ),
         },
     )
-    got = Autolabel(BASE, t, sleep=lambda s: None).matched_sessions(
-        "no-outcome", ["s1", "s2", "s3"], chunk=2
-    )
-    assert got == {"s1", "s3"}
+    client = Autolabel(BASE, t, sleep=lambda s: None)
+    matched, unknown = client.matched_sessions("no-outcome", ["s1", "s2", "s3"], chunk=2)
+    assert matched == {"s1", "s3"} and unknown == set()
     assert [c[2]["session_ids"] for c in calls] == [["s1", "s2"], ["s3"]]
+
+
+def test_a_failed_chunk_or_missing_session_is_unknown_not_fatal():
+    t, _ = scripted(
+        {"id": "a", "state": "failed", "error": "paperctl export failed"},
+        {
+            "id": "b",
+            "state": "done",
+            "result": {
+                **result(
+                    [
+                        {"session_id": "s3", "matched": True, "turns": []},
+                    ]
+                ),
+                "missing": ["s4"],
+            },
+        },
+    )
+    client = Autolabel(BASE, t, sleep=lambda s: None)
+    matched, unknown = client.matched_sessions("no-outcome", ["s1", "s2", "s3", "s4"], chunk=2)
+    assert matched == {"s3"}
+    assert unknown == {"s1", "s2", "s4"}
+
+
+def test_matched_sessions_raises_on_a_reason():
+    t, _ = scripted({"id": "a", "state": "done", "result": result([], reason="needs_judge")})
+    with pytest.raises(AutolabelError, match="needs_judge"):
+        Autolabel(BASE, t, sleep=lambda s: None).matched_sessions("pushback", ["s1"])
 
 
 def test_turn_evidence_maps_trace_to_evidence_and_passes_reason():

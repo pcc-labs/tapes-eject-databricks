@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -47,10 +48,19 @@ def conversation(turns: list[dict]) -> list[dict]:
     return msgs
 
 
-def _trainable(labels: set[str], has_outcome: bool | None) -> bool:
-    if REGRESSION in labels:
-        return False  # a known failure never becomes training data, even if also golden
-    return GOLDEN in labels or (has_outcome is True and not labels & NEGATIVE_LABELS)
+def is_holdout(session_id: str) -> bool:
+    """One `golden` session in five is an eval case instead of training data. Stable across runs,
+    so a session never moves between the two and the tuned model is never scored on text it
+    was trained on."""
+    return int(hashlib.sha1(session_id.encode()).hexdigest()[:8], 16) % 5 == 0
+
+
+def _trainable(sid: str, labels: set[str], has_outcome: bool | None) -> bool:
+    if REGRESSION in labels or labels & set(CORRECTION_LABELS):
+        return False  # a known failure or a corrected turn never becomes training data
+    if GOLDEN in labels:
+        return not is_holdout(sid)
+    return has_outcome is True and not labels & NEGATIVE_LABELS
 
 
 def training_examples(sessions: list[dict], turns: list[dict], labels: list[dict]) -> list[dict]:
@@ -58,7 +68,7 @@ def training_examples(sessions: list[dict], turns: list[dict], labels: list[dict
     out: list[dict] = []
     for s in sessions:
         sid = s["session_id"]
-        if not _trainable(by_label.get(sid, set()), s.get("has_outcome")):
+        if not _trainable(sid, by_label.get(sid, set()), s.get("has_outcome")):
             continue
         msgs = conversation(by_turns.get(sid, [])[:MAX_TRAIN_TURNS])
         while msgs and msgs[-1]["role"] != "assistant":
@@ -124,7 +134,7 @@ def session_cases(sessions: list[dict], turns: list[dict], labels: list[dict]) -
                 "The response must not repeat the failure this request once led to. "
                 f"The engineer had to say: {failure}"
             )
-        elif ts[0].get("agent_text"):
+        elif ts[0].get("agent_text") and is_holdout(sid):
             guideline = (
                 "The response takes the same approach as this known-good answer: "
                 f"{clip(ts[0]['agent_text'], 2_000)}"
@@ -136,13 +146,23 @@ def session_cases(sessions: list[dict], turns: list[dict], labels: list[dict]) -
 
 
 def eval_records(sessions: list[dict], turns: list[dict], labels: list[dict]) -> list[dict]:
-    return correction_cases(turns, labels) + session_cases(sessions, turns, labels)
+    """Every case, one per distinct input. MLflow's dataset keys records by their inputs, so two
+    cases with the same inputs would silently overwrite each other; merge their guidelines."""
+    merged: dict[str, dict] = {}
+    for case in correction_cases(turns, labels) + session_cases(sessions, turns, labels):
+        key = json.dumps(case["inputs"], sort_keys=True)
+        if key not in merged:
+            merged[key] = {"inputs": case["inputs"], "expectations": {"guidelines": []}}
+        guidelines = merged[key]["expectations"]["guidelines"]
+        for g in case["expectations"]["guidelines"]:
+            if g not in guidelines:
+                guidelines.append(g)
+    return list(merged.values())
 
 
 def counts(sessions: list[dict], turns: list[dict], labels: list[dict]) -> dict[str, int]:
     by_label = labels_by_session(labels)
     corr = len(correction_cases(turns, labels))
-    sess_cases = len(session_cases(sessions, turns, labels))
     return {
         "sessions": len(sessions),
         "with_outcome": sum(1 for s in sessions if s.get("has_outcome") is True),
@@ -151,5 +171,5 @@ def counts(sessions: list[dict], turns: list[dict], labels: list[dict]) -> dict[
         "correction_cases": corr,
         "golden": sum(1 for names in by_label.values() if GOLDEN in names),
         "regression": sum(1 for names in by_label.values() if REGRESSION in names),
-        "eval_cases": corr + sess_cases,
+        "eval_cases": len(eval_records(sessions, turns, labels)),
     }
