@@ -7,6 +7,7 @@ import sys
 
 from . import config, doctor
 from .autolabel import Autolabel
+from .export import run_export, write_export
 from .paper import Paper
 
 
@@ -34,6 +35,18 @@ def cmd_label(cfg: config.Config, args: argparse.Namespace) -> int:
     return 0 if not done["push_failed"] else 1
 
 
+def cmd_export(cfg: config.Config, args: argparse.Namespace) -> int:
+    paper = Paper(org_slug=cfg.org_slug)
+    ex = run_export(paper, Autolabel(cfg.autolabel_url), cfg, with_evidence=args.evidence)
+    write_export(ex, cfg.data_dir)
+    print(
+        f"{len(ex.sessions)} sessions, {len(ex.turns)} turns, {len(ex.labels)} labels "
+        f"-> {cfg.data_dir}/ ({len(ex.failed)} failed/skipped, {len(ex.unmapped)} unmapped labels; "
+        f"see report.json)"
+    )
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="tapes-eject")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -45,6 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     lab.add_argument("--sessions", type=int, default=25)
     lab.add_argument("--apply", action="store_true", help="write the labels to Paper")
     lab.set_defaults(fn=cmd_label)
+    exp = sub.add_parser("export", help="pull labeled sessions from Paper into data/")
+    exp.add_argument("--evidence", action="store_true", help="ask the cassette for per-turn evidence")
+    exp.set_defaults(fn=cmd_export)
     return p
 
 
