@@ -29,13 +29,19 @@ def test_run_posts_then_polls_until_done():
     seen = []
     got = Autolabel(BASE, t, sleep=lambda s: None).run("apology", ["s1"], on_progress=seen.append)
     assert got["sessions"] == []
-    assert calls[0] == ("POST", f"{BASE}/run", {"label": "apology", "session_ids": ["s1"], "apply": False})
+    assert calls[0] == (
+        "POST",
+        f"{BASE}/run",
+        {"label": "apology", "session_ids": ["s1"], "apply": False},
+    )
     assert calls[1][:2] == ("GET", f"{BASE}/runs/r1")
     assert seen == ["scanning 2 sessions"]
 
 
 def test_run_raises_when_the_job_failed():
-    t, _ = scripted({"id": "r1", "state": "running"}, {"id": "r1", "state": "failed", "error": "boom"})
+    t, _ = scripted(
+        {"id": "r1", "state": "running"}, {"id": "r1", "state": "failed", "error": "boom"}
+    )
     with pytest.raises(AutolabelError, match="failed: boom"):
         Autolabel(BASE, t, sleep=lambda s: None).run("apology", ["s1"])
 
@@ -49,18 +55,42 @@ def test_run_gives_up_after_max_wait():
 
 def test_matched_sessions_chunks_and_unions():
     t, calls = scripted(
-        {"id": "a", "state": "done", "result": result([{"session_id": "s1", "matched": True, "turns": []}, {"session_id": "s2", "matched": False, "turns": []}])},
-        {"id": "b", "state": "done", "result": result([{"session_id": "s3", "matched": True, "turns": []}])},
+        {
+            "id": "a",
+            "state": "done",
+            "result": result(
+                [
+                    {"session_id": "s1", "matched": True, "turns": []},
+                    {"session_id": "s2", "matched": False, "turns": []},
+                ]
+            ),
+        },
+        {
+            "id": "b",
+            "state": "done",
+            "result": result([{"session_id": "s3", "matched": True, "turns": []}]),
+        },
     )
-    got = Autolabel(BASE, t, sleep=lambda s: None).matched_sessions("no-outcome", ["s1", "s2", "s3"], chunk=2)
+    got = Autolabel(BASE, t, sleep=lambda s: None).matched_sessions(
+        "no-outcome", ["s1", "s2", "s3"], chunk=2
+    )
     assert got == {"s1", "s3"}
     assert [c[2]["session_ids"] for c in calls] == [["s1", "s2"], ["s3"]]
 
 
 def test_turn_evidence_maps_trace_to_evidence_and_passes_reason():
-    turns = [{"turn_id": "trc_1", "evidence": "no, use the other flag"}, {"turn_id": "trc_1", "evidence": "dup"}]
+    turns = [
+        {"turn_id": "trc_1", "evidence": "no, use the other flag"},
+        {"turn_id": "trc_1", "evidence": "dup"},
+    ]
     t, _ = scripted(
-        {"id": "a", "state": "done", "result": result([{"session_id": "s1", "matched": True, "turns": turns}], reason="needs_judge")}
+        {
+            "id": "a",
+            "state": "done",
+            "result": result(
+                [{"session_id": "s1", "matched": True, "turns": turns}], reason="needs_judge"
+            ),
+        }
     )
     ev, reason = Autolabel(BASE, t, sleep=lambda s: None).turn_evidence("pushback", ["s1"])
     assert ev == {"trc_1": "no, use the other flag"}

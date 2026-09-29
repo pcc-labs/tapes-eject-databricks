@@ -7,7 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urlsplit
 
-NEGATIVE_LABELS = frozenset({"pushback", "apology", "missing-knowledge", "model-error", "regression"})
+NEGATIVE_LABELS = frozenset(
+    {"pushback", "apology", "missing-knowledge", "model-error", "regression"}
+)
 CORRECTION_LABELS = ("pushback", "observation", "missing-knowledge")
 GOLDEN = "golden"
 REGRESSION = "regression"

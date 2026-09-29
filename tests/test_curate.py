@@ -6,7 +6,14 @@ def s(sid, has_outcome=True, title="t"):
 
 
 def t(sid, tid, ordinal, prompt, reply, synthetic=False):
-    return {"session_id": sid, "turn_id": tid, "ordinal": ordinal, "user_prompt": prompt, "agent_text": reply, "synthetic": synthetic}
+    return {
+        "session_id": sid,
+        "turn_id": tid,
+        "ordinal": ordinal,
+        "user_prompt": prompt,
+        "agent_text": reply,
+        "synthetic": synthetic,
+    }
 
 
 def lab(label, sid, ptype="session", tid=None):
@@ -22,7 +29,9 @@ TURNS = [
 
 
 def test_training_takes_outcome_sessions_without_negative_labels():
-    ex = training_examples([s("a"), s("b"), s("c", has_outcome=False)], TURNS, [lab("pushback", "a")])
+    ex = training_examples(
+        [s("a"), s("b"), s("c", has_outcome=False)], TURNS, [lab("pushback", "a")]
+    )
     assert [e["session_id"] for e in ex] == ["b"]
     assert ex[0]["messages"] == [
         {"role": "user", "content": "write tests"},
@@ -71,8 +80,18 @@ def test_golden_session_case_quotes_the_good_answer():
 
 
 def test_counts():
-    c = counts([s("a"), s("b"), s("c", has_outcome=None)], TURNS, [lab("pushback", "a", "trace", "a2"), lab("golden", "b")])
+    c = counts(
+        [s("a"), s("b"), s("c", has_outcome=None)],
+        TURNS,
+        [lab("pushback", "a", "trace", "a2"), lab("golden", "b")],
+    )
     assert c == {
-        "sessions": 3, "with_outcome": 2, "outcome_unknown": 1, "training_examples": 1,
-        "correction_cases": 1, "golden": 1, "regression": 0, "eval_cases": 2,
+        "sessions": 3,
+        "with_outcome": 2,
+        "outcome_unknown": 1,
+        "training_examples": 1,
+        "correction_cases": 1,
+        "golden": 1,
+        "regression": 0,
+        "eval_cases": 2,
     }

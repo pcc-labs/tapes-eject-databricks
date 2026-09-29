@@ -8,7 +8,13 @@ from tapes_eject.export import choose_sessions, label_rows, run_export, turn_row
 from tapes_eject.paper import PaperError
 from tests.helpers import record
 
-CFG = load({"TAPES_EJECT_CATALOG": "demo", "DATABRICKS_WAREHOUSE_ID": "wh", "TAPES_EJECT_SAMPLE_SESSIONS": "5"})
+CFG = load(
+    {
+        "TAPES_EJECT_CATALOG": "demo",
+        "DATABRICKS_WAREHOUSE_ID": "wh",
+        "TAPES_EJECT_SAMPLE_SESSIONS": "5",
+    }
+)
 
 
 class FakePaper:
@@ -86,7 +92,9 @@ def test_choose_sessions_skips_oversized_labeled_and_samples_short_recent():
 
 
 def test_turn_rows_are_redacted():
-    sess = parse_session(record("s1", [("trc_1", "use key sk-ant-abcdefghijklmnopqrstuvwxyz0123", "ok")]))
+    sess = parse_session(
+        record("s1", [("trc_1", "use key sk-ant-abcdefghijklmnopqrstuvwxyz0123", "ok")])
+    )
     (row,) = turn_rows(sess)
     assert "sk-ant-" not in row["user_prompt"] and "[redacted]" in row["user_prompt"]
     assert row["agent_text"] == "ok"

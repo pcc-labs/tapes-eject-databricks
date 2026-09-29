@@ -142,7 +142,10 @@ def run_export(
     labels = [lab for lab in paper.labels() if any((lab.get("usage") or {}).get(t) for t in LEVELS)]
     attachments = {
         lab["name"]: [
-            a for t in LEVELS if (lab.get("usage") or {}).get(t) for a in paper.attachments(lab["id"], t)
+            a
+            for t in LEVELS
+            if (lab.get("usage") or {}).get(t)
+            for a in paper.attachments(lab["id"], t)
         ]
         for lab in labels
     }

@@ -50,7 +50,9 @@ def _autolabel(cfg: Config) -> str:
         ping = json.loads(resp.read())
     org = cfg.org_slug or _paper_org()
     if ping.get("org") != org:
-        raise RuntimeError(f"cassette org is {ping.get('org')!r}, Paper org is {org!r}: set LABEL_SAMPLER_ORG")
+        raise RuntimeError(
+            f"cassette org is {ping.get('org')!r}, Paper org is {org!r}: set LABEL_SAMPLER_ORG"
+        )
     judge = "on" if ping.get("judge") else "OFF (pushback/question/observation answer needs_judge)"
     return f"org={org} judge={judge}"
 
@@ -68,7 +70,9 @@ def _mlflow_datasets() -> str:
 
     for name in ("create_dataset", "get_dataset", "delete_dataset"):
         if not hasattr(ds, name):
-            raise RuntimeError(f"mlflow {mlflow.__version__} has no genai.datasets.{name}; need >=3.12")
+            raise RuntimeError(
+                f"mlflow {mlflow.__version__} has no genai.datasets.{name}; need >=3.12"
+            )
     return f"mlflow {mlflow.__version__}"
 
 

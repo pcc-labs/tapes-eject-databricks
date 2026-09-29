@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import config, curate, doctor
+from . import config, curate, doctor, serve
 from .autolabel import Autolabel
 from .databricks_io import Databricks
 from .export import run_export, write_export
@@ -53,8 +53,11 @@ def _load_rows(cfg: config.Config) -> tuple[list[dict], list[dict], list[dict]]:
     d = cfg.data_dir
     if not (d / "sessions.jsonl").exists():
         raise SystemExit(f"no export in {d}/: run `tapes-eject export` first")
-    return (curate.read_jsonl(d / "sessions.jsonl"), curate.read_jsonl(d / "turns.jsonl"),
-            curate.read_jsonl(d / "labels.jsonl"))
+    return (
+        curate.read_jsonl(d / "sessions.jsonl"),
+        curate.read_jsonl(d / "turns.jsonl"),
+        curate.read_jsonl(d / "labels.jsonl"),
+    )
 
 
 def cmd_count(cfg: config.Config, args: argparse.Namespace) -> int:
@@ -77,8 +80,49 @@ def cmd_sync(cfg: config.Config, args: argparse.Namespace) -> int:
     import mlflow.genai.datasets as datasets
 
     got = run_sync(cfg, Databricks(cfg), datasets)
-    print(f"{got['training_examples']} training examples, {got['eval_cases']} eval cases in "
-          f"{cfg.catalog}.{cfg.schema} (MLflow {mlflow.__version__})")
+    print(
+        f"{got['training_examples']} training examples, {got['eval_cases']} eval cases in "
+        f"{cfg.catalog}.{cfg.schema} (MLflow {mlflow.__version__})"
+    )
+    return 0
+
+
+def cmd_serve(cfg: config.Config, args: argparse.Namespace) -> int:
+    db = Databricks(cfg)
+    print(f"creating {serve.ENDPOINT} (a cold start takes minutes)...")
+    db.w.serving_endpoints.create_and_wait(
+        name=serve.ENDPOINT, config=serve.endpoint_config(cfg, args.version)
+    )
+    print(f"ready: {db.w.config.host}/ml/endpoints/{serve.ENDPOINT}")
+    return 0
+
+
+def cmd_unserve(cfg: config.Config, args: argparse.Namespace) -> int:
+    Databricks(cfg).w.serving_endpoints.delete(serve.ENDPOINT)
+    print(f"deleted {serve.ENDPOINT}")
+    return 0
+
+
+def cmd_ask(cfg: config.Config, args: argparse.Namespace) -> int:
+    from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+
+    res = Databricks(cfg).w.serving_endpoints.query(
+        name=serve.ENDPOINT, messages=[ChatMessage(role=ChatMessageRole.USER, content=args.prompt)]
+    )
+    print(res.choices[0].message.content)
+    return 0
+
+
+def cmd_spend(cfg: config.Config, args: argparse.Namespace) -> int:
+    try:
+        rows = Databricks(cfg).sql(serve.spend_sql(args.since))
+    except RuntimeError as e:
+        print(f"system billing tables unavailable ({e}); use Account console -> Usage")
+        return 1
+    total = sum(float(r[2] or 0) for r in rows)
+    for sku, dbus, usd in rows:
+        print(f"{sku:<50} {dbus:>10} DBU  ${usd}")
+    print(f"{'total':<50} {'':>14}  ${total:.2f} of $400")
     return 0
 
 
@@ -89,19 +133,33 @@ def build_parser() -> argparse.ArgumentParser:
         fn=cmd_doctor
     )
     lab = sub.add_parser("label", help="Act 1: find a label across recent sessions, then apply it")
-    lab.add_argument("name", help="apology, dream, subagents, no-outcome, pushback, question, observation")
+    lab.add_argument(
+        "name", help="apology, dream, subagents, no-outcome, pushback, question, observation"
+    )
     lab.add_argument("--sessions", type=int, default=25)
     lab.add_argument("--apply", action="store_true", help="write the labels to Paper")
     lab.set_defaults(fn=cmd_label)
     exp = sub.add_parser("export", help="pull labeled sessions from Paper into data/")
-    exp.add_argument("--evidence", action="store_true", help="ask the cassette for per-turn evidence")
+    exp.add_argument(
+        "--evidence", action="store_true", help="ask the cassette for per-turn evidence"
+    )
     exp.set_defaults(fn=cmd_export)
     sub.add_parser("count", help="how much training and eval data the labels select").set_defaults(
         fn=cmd_count
     )
-    sub.add_parser("sync", help="load data/ into Unity Catalog and the MLflow eval dataset").set_defaults(
-        fn=cmd_sync
-    )
+    sub.add_parser(
+        "sync", help="load data/ into Unity Catalog and the MLflow eval dataset"
+    ).set_defaults(fn=cmd_sync)
+    sv = sub.add_parser("serve", help="create the tuned model's endpoint (A10, scales to zero)")
+    sv.add_argument("--version", type=int, required=True)
+    sv.set_defaults(fn=cmd_serve)
+    sub.add_parser("unserve", help="delete the endpoint").set_defaults(fn=cmd_unserve)
+    ask = sub.add_parser("ask", help="send one prompt to the endpoint")
+    ask.add_argument("prompt")
+    ask.set_defaults(fn=cmd_ask)
+    sp = sub.add_parser("spend", help="Databricks spend since a date, from system billing tables")
+    sp.add_argument("--since", default="2026-09-29")
+    sp.set_defaults(fn=cmd_spend)
     return p
 
 

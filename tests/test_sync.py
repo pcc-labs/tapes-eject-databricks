@@ -71,8 +71,27 @@ def test_run_sync_creates_before_upload_then_loads_and_rebuilds_eval(tmp_path):
     c = cfg(tmp_path)
     rows = {
         "sessions.jsonl": [{"session_id": "b", "has_outcome": True, "title": "t"}],
-        "turns.jsonl": [{"session_id": "b", "turn_id": "b1", "ordinal": 0, "user_prompt": "hi", "agent_text": "yo", "synthetic": False}],
-        "labels.jsonl": [{"label": "golden", "primitive_type": "session", "primitive_id": "b", "session_id": "b", "turn_id": None, "span_id": None, "evidence": None}],
+        "turns.jsonl": [
+            {
+                "session_id": "b",
+                "turn_id": "b1",
+                "ordinal": 0,
+                "user_prompt": "hi",
+                "agent_text": "yo",
+                "synthetic": False,
+            }
+        ],
+        "labels.jsonl": [
+            {
+                "label": "golden",
+                "primitive_type": "session",
+                "primitive_id": "b",
+                "session_id": "b",
+                "turn_id": None,
+                "span_id": None,
+                "evidence": None,
+            }
+        ],
     }
     for name, rs in rows.items():
         (tmp_path / name).write_text("".join(json.dumps(r) + "\n" for r in rs))
@@ -81,6 +100,9 @@ def test_run_sync_creates_before_upload_then_loads_and_rebuilds_eval(tmp_path):
     kinds = [k for k, _ in db.log]
     assert kinds == ["sql"] * 5 + ["upload"] * 4 + ["sql"] * 4  # create, then upload, then load
     assert ("upload", "/Volumes/demo/agent_sessions/raw/training.jsonl") in db.log
-    assert datasets.calls == [("delete", "demo.agent_sessions.eval_cases"), ("create", "demo.agent_sessions.eval_cases")]
+    assert datasets.calls == [
+        ("delete", "demo.agent_sessions.eval_cases"),
+        ("create", "demo.agent_sessions.eval_cases"),
+    ]
     assert len(datasets.ds.records) == 1
     assert got == {"training_examples": 1, "eval_cases": 1}

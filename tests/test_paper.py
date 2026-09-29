@@ -17,7 +17,10 @@ def test_attachments_follow_the_cursor_to_the_end():
     run = FakeRunner(
         [
             (("--cursor", "c1"), {"attachments": [{"primitive_id": "b"}], "next_cursor": None}),
-            (("list-label-attachments",), {"attachments": [{"primitive_id": "a"}], "next_cursor": "c1"}),
+            (
+                ("list-label-attachments",),
+                {"attachments": [{"primitive_id": "a"}], "next_cursor": "c1"},
+            ),
         ]
     )
     got = Paper(run).attachments("L1", "trace")

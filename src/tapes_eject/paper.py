@@ -75,7 +75,9 @@ class Paper:
         return out[:limit]
 
     def export_session(self, session_id: str, timeout: int = 300) -> dict | None:
-        """The full record at paperctl's default detail. Never pass --detail: `traces` strips spans."""
+        """The full record at paperctl's default detail.
+
+        Never pass --detail: `traces` strips spans."""
         text = self._call(["sessions", "export", session_id], timeout)
         for line in text.splitlines():
             if line.strip():

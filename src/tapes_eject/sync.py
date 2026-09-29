@@ -34,7 +34,8 @@ def setup_statements(cfg: Config) -> list[str]:
     return [
         f"CREATE SCHEMA IF NOT EXISTS {schema}",
         f"CREATE VOLUME IF NOT EXISTS {schema}.{cfg.volume}",
-        f"CREATE TABLE IF NOT EXISTS {cfg.table('sessions')} ({SESSIONS_COLS}, synced_at TIMESTAMP)",
+        f"CREATE TABLE IF NOT EXISTS {cfg.table('sessions')} "
+        f"({SESSIONS_COLS}, synced_at TIMESTAMP)",
         f"CREATE TABLE IF NOT EXISTS {cfg.table('turns')} ({TURNS_COLS}, synced_at TIMESTAMP)",
         f"CREATE TABLE IF NOT EXISTS {cfg.table('labels')} ({LABELS_COLS}, synced_at TIMESTAMP)",
     ]
@@ -49,13 +50,16 @@ def _source(cfg: Config, file: str, cols: str) -> str:
 
 def load_statements(cfg: Config) -> list[str]:
     return [
-        f"MERGE INTO {cfg.table('sessions')} AS t USING {_source(cfg, 'sessions.jsonl', SESSIONS_COLS)} AS s "
+        f"MERGE INTO {cfg.table('sessions')} AS t "
+        f"USING {_source(cfg, 'sessions.jsonl', SESSIONS_COLS)} AS s "
         "ON t.session_id = s.session_id "
         "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *",
-        f"MERGE INTO {cfg.table('turns')} AS t USING {_source(cfg, 'turns.jsonl', TURNS_COLS)} AS s "
+        f"MERGE INTO {cfg.table('turns')} AS t "
+        f"USING {_source(cfg, 'turns.jsonl', TURNS_COLS)} AS s "
         "ON t.session_id = s.session_id AND t.turn_id = s.turn_id "
         "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT *",
-        f"MERGE INTO {cfg.table('labels')} AS t USING {_source(cfg, 'labels.jsonl', LABELS_COLS)} AS s "
+        f"MERGE INTO {cfg.table('labels')} AS t "
+        f"USING {_source(cfg, 'labels.jsonl', LABELS_COLS)} AS s "
         "ON t.label = s.label AND t.primitive_type = s.primitive_type "
         "AND t.primitive_id = s.primitive_id "
         "WHEN MATCHED THEN UPDATE SET * WHEN NOT MATCHED THEN INSERT * "
