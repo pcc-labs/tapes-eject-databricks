@@ -28,3 +28,7 @@ A few Databricks words, defined once:
 - **AI Runtime**: serverless GPUs. You pay only while a job runs.
 - **Job**: a run of a notebook or script on Databricks compute, started from the CLI.
 - **Model Serving**: your model as an HTTPS endpoint.
+
+## Act 3: Train on Databricks GPUs
+
+`databricks bundle run sft_train --params max_steps=5` is the smoke run; `max_steps=0` is the full run. The job reads the training examples the labels selected, fine-tunes Qwen3-4B with supervised fine-tuning on one H100, logs the run to MLflow, and registers `<catalog>.agent_sessions.agent_qwen3_4b` in Unity Catalog.

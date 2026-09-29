@@ -1,0 +1,15 @@
+bundle:
+  name: tapes-eject-databricks
+
+include:
+  - resources/*.yml
+
+sync:
+  include:
+    - train/*.py
+
+targets:
+  demo:
+    default: true
+    workspace:
+      profile: tapes-eject
