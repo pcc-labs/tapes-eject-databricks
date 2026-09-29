@@ -10,3 +10,21 @@ Paper labels your agent sessions. This demo takes those labels to Databricks, wh
 Design: [docs/specs/2026-09-29-databricks-labels-design.md](docs/specs/2026-09-29-databricks-labels-design.md)
 
 Status: design only. No code yet.
+
+## Setup
+
+You need: a Databricks free-trial workspace (not Free Edition, which has no GPUs), Paper access, and the autolabel cassette running beside this repo.
+
+1. Run every command in "Step 1" of `docs/superpowers/plans/2026-09-29-tapes-eject-databricks.md`.
+2. `cp .env.example .env` and fill in `TAPES_EJECT_CATALOG` and `DATABRICKS_WAREHOUSE_ID`.
+3. `uv sync`
+4. `uv run tapes-eject doctor`. Every line should say `ok`.
+
+A few Databricks words, defined once:
+- **Unity Catalog**: where tables, files, and models live, with permissions and history. Names are `catalog.schema.thing`.
+- **Volume**: a governed folder of files inside Unity Catalog, at `/Volumes/<catalog>/<schema>/<volume>`.
+- **SQL warehouse**: compute that runs SQL. We use it to load tables.
+- **MLflow**: the experiment tracker. It records training runs, evaluation datasets, and scores.
+- **AI Runtime**: serverless GPUs. You pay only while a job runs.
+- **Job**: a run of a notebook or script on Databricks compute, started from the CLI.
+- **Model Serving**: your model as an HTTPS endpoint.

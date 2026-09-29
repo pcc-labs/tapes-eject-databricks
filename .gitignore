@@ -3,3 +3,6 @@ __pycache__/
 data/
 .databricks/
 .env
+*.egg-info/
+resources/*.src/
+.superpowers/
