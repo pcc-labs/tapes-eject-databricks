@@ -31,7 +31,7 @@ def label_candidates(
     for it in items:
         if not ((it.get("rollup") or {}).get("turn_count") or 0):
             continue  # an empty session cannot carry a label; do not export it
-        reason = too_big(it, cfg.max_turns, cfg.max_output_tokens)
+        reason = too_big(it, cfg.max_turns, cfg.max_output_tokens, cfg.skip_sessions)
         if reason:
             skipped.append((it["id"], reason))
         else:

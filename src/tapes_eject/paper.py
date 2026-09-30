@@ -1,12 +1,24 @@
-"""Read Paper through paperctl. paperd supplies auth and routing; this module holds no token."""
+"""Read Paper through paperctl and paperd's local proxy. paperd supplies auth and routing; this
+module holds no token.
+
+Session records come from core's own projection, `GET /v1/sessions/{id}/traces`, through the
+proxy paperd runs on localhost. `paperctl sessions export` writes the same record but goes
+through Paper's export cassette, a wrapper that has gone down under a stream of ordinary
+exports; core kept answering while it was down. paperctl remains the fallback when the daemon
+reports no proxy.
+"""
 
 from __future__ import annotations
 
 import json
+import re
 import subprocess
+import urllib.error
+import urllib.request
 from typing import Callable
 
 Runner = Callable[[list[str], int], str]
+Fetcher = Callable[[str, int], bytes]  # GET url -> body; raises PaperError
 
 
 class PaperError(RuntimeError):
@@ -26,10 +38,47 @@ def paperctl(argv: list[str], timeout: int) -> str:
     return proc.stdout
 
 
+def http_get(url: str, timeout: int) -> bytes:
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return b""
+        raise PaperError(f"GET {url} failed: HTTP {e.code}") from e
+    except (urllib.error.URLError, TimeoutError, OSError) as e:
+        raise PaperError(f"GET {url} could not reach paperd's proxy: {e}") from e
+
+
+def proxy_from_status(status_text: str) -> str | None:
+    """The `proxy:` line of `paperctl status`, as a base URL."""
+    m = re.search(r"^proxy:\s+(\S+)", status_text, re.M)
+    return f"http://{m.group(1)}" if m else None
+
+
 class Paper:
-    def __init__(self, run: Runner = paperctl, org_slug: str | None = None):
+    def __init__(
+        self,
+        run: Runner = paperctl,
+        org_slug: str | None = None,
+        proxy: str | None = None,
+        fetch: Fetcher = http_get,
+    ):
         self._run = run
         self._org = org_slug
+        self._proxy = proxy.rstrip("/") if proxy else None
+        self._proxy_checked = proxy is not None
+        self._fetch = fetch
+
+    def proxy(self) -> str | None:
+        """paperd's local proxy, found once from `paperctl status`; None if the daemon has none."""
+        if not self._proxy_checked:
+            self._proxy_checked = True
+            try:
+                self._proxy = proxy_from_status(self._run(["status"], 30))
+            except PaperError:
+                self._proxy = None
+        return self._proxy
 
     def _call(self, argv: list[str], timeout: int = 120) -> str:
         prefix = ["--org-slug", self._org] if self._org else []
@@ -75,11 +124,29 @@ class Paper:
         return out[:limit]
 
     def export_session(self, session_id: str, timeout: int = 300) -> dict | None:
-        """The full record at paperctl's default detail.
-
-        Never pass --detail: `traces` strips spans."""
+        """The session's full record: {schema, session, traces: [{trace, spans}], links}. From
+        core through paperd's proxy when there is one, else paperctl's export (never with
+        --detail: `traces` strips spans). The proxy uses the daemon's active org."""
+        proxy = self.proxy()
+        if proxy:
+            body = self._fetch(f"{proxy}/v1/sessions/{session_id}/traces", timeout)
+            if not body:
+                return None
+            try:
+                return json.loads(body)
+            except ValueError as e:
+                raise PaperError(
+                    f"sessions traces {session_id} truncated at {len(body)} bytes: {e}"
+                ) from e
         text = self._call(["sessions", "export", session_id], timeout)
         for line in text.splitlines():
             if line.strip():
-                return json.loads(line)
+                try:
+                    return json.loads(line)
+                except ValueError as e:
+                    # Paper's export service cuts the stream when it goes down mid-response;
+                    # the record arrives truncated. Report it as such, never cache it.
+                    raise PaperError(
+                        f"sessions export {session_id} truncated at {len(line)} bytes: {e}"
+                    ) from e
         return None

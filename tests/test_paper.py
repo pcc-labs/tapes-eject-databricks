@@ -42,7 +42,9 @@ def test_sessions_passes_label_json_and_pages_until_limit():
 
 def test_export_never_passes_detail_and_returns_the_record():
     rec = record("s1", [("trc_1", "hi", "hello")])
-    run = FakeRunner([(("sessions", "export", "s1"), json.dumps(rec) + "\n")])
+    run = FakeRunner(
+        [(("status",), "paperd: stopped\n"), (("sessions", "export", "s1"), json.dumps(rec) + "\n")]
+    )
     assert Paper(run).export_session("s1") == rec
     assert "--detail" not in run.calls[0]
 
@@ -60,3 +62,61 @@ def test_paperctl_timeout_becomes_paper_error(monkeypatch):
     monkeypatch.setattr(paper.subprocess, "run", slow)
     with pytest.raises(PaperError, match="timed out"):
         paper.paperctl(["sessions", "export", "s1"], 1)
+
+
+def test_export_session_reports_a_truncated_record_as_an_error():
+    cut = '{"schema": "2026-06-15", "session": {"id": "s1", "title": "half a rec'
+    paper = Paper(
+        run=FakeRunner([(("status",), "paperd: stopped\n"), (("sessions", "export"), cut)])
+    )
+    with pytest.raises(PaperError, match="truncated at"):
+        paper.export_session("s1")
+
+
+STATUS = "paperd:    running (pid 1)\nproxy:     127.0.0.1:51539\nauth:      healthy\n"
+
+
+def test_export_session_reads_core_traces_through_the_proxy_found_in_status():
+    run = FakeRunner([(("status",), STATUS)])
+    urls = []
+
+    def fetch(url, timeout):
+        urls.append(url)
+        return json.dumps(record("s1", [("trc_1", "hi", "ok")])).encode()
+
+    paper = Paper(run, fetch=fetch)
+    rec = paper.export_session("s1")
+    assert rec["session"]["id"] == "s1" and rec["traces"]
+    assert urls == ["http://127.0.0.1:51539/v1/sessions/s1/traces"]
+    assert paper.export_session("s2") and len(run.calls) == 1  # status asked once
+
+
+def test_export_session_maps_proxy_outcomes_to_paper_errors():
+    paper = Paper(FakeRunner([]), proxy="http://127.0.0.1:1/", fetch=lambda u, t: b"")
+    assert paper.export_session("gone") is None
+    cut = Paper(FakeRunner([]), proxy="http://p", fetch=lambda u, t: b'{"schema": "x", "sess')
+    with pytest.raises(PaperError, match="truncated at"):
+        cut.export_session("s1")
+
+    def down(u, t):
+        raise PaperError(f"GET {u} could not reach paperd's proxy: refused")
+
+    with pytest.raises(PaperError, match="could not reach"):
+        Paper(FakeRunner([]), proxy="http://p", fetch=down).export_session("s1")
+
+
+def test_export_session_falls_back_to_paperctl_without_a_proxy():
+    rec = record("s1", [("trc_1", "hi", "ok")])
+    run = FakeRunner(
+        [(("status",), "paperd: stopped\n"), (("sessions", "export"), json.dumps(rec))]
+    )
+    paper = Paper(run, fetch=lambda u, t: (_ for _ in ()).throw(AssertionError("no proxy call")))
+    assert paper.export_session("s1")["session"]["id"] == "s1"
+    assert run.calls[-1][-3:] == ["sessions", "export", "s1"]
+
+
+def test_proxy_from_status():
+    from tapes_eject.paper import proxy_from_status
+
+    assert proxy_from_status(STATUS) == "http://127.0.0.1:51539"
+    assert proxy_from_status("paperd: stopped") is None

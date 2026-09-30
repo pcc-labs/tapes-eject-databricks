@@ -125,6 +125,15 @@ def test_choose_sessions_skips_short_sessions_with_huge_output():
     ]
 
 
+def test_choose_sessions_honours_the_skip_list():
+    labeled = {"poison": item("poison", 9, output_tokens=201_633), "s1": item("s1", 4)}
+    ids, skipped = choose_sessions(labeled, [item("poison")], 5, 150, skip=frozenset({"poison"}))
+    assert ids == ["s1"]
+    assert skipped == [
+        ("poison", "in TAPES_EJECT_SKIP_SESSIONS: its export has taken Paper's service down")
+    ]
+
+
 def test_session_row_carries_the_project_from_the_cwd():
     from tapes_eject.export import project_name, session_row
 
@@ -166,12 +175,18 @@ def _paper(fail=()):
     )
 
 
-def test_run_export_stops_at_an_outage_and_marks_the_rest_not_tried():
-    ex = run_export(_paper(fail={"s1"}), FakeAutolabel(), CFG, log=lambda m: None)
-    assert ex.sessions == []
+def test_run_export_reads_only_the_cache_after_an_outage(tmp_path):
+    # A warm pass caches s1 and s2. Then s1 is dropped from the cache and its fetch fails
+    # outage-shaped: s2 still comes from the cache, s3 is not tried.
+    warm = _paper()
+    run_export(warm, FakeAutolabel(), CFG, log=lambda m: None, cache_dir=tmp_path)
+    (tmp_path / "s1.json").unlink()
+    paper = _paper(fail={"s1"})
+    ex = run_export(paper, FakeAutolabel(), CFG, log=lambda m: None, cache_dir=tmp_path)
+    assert paper.exported == ["s1"]  # nothing was requested after the outage
+    assert {s["session_id"] for s in ex.sessions} == {"s2"}
     assert ex.failed == [
         ("s1", "paperctl sessions export timed out after 300s"),
-        ("s2", "not tried: export service unreachable"),
         ("s3", "not tried: export service unreachable"),
     ]
     assert "1 session exports failed" not in problems(

@@ -21,6 +21,8 @@ def test_load_defaults_and_names():
     assert cfg.sample_sessions == 200 and cfg.max_turns == 150
     assert cfg.max_output_tokens == 400_000
     assert load({**BASE, "TAPES_EJECT_MAX_OUTPUT_TOKENS": "50000"}).max_output_tokens == 50_000
+    assert cfg.export_pause == 1.0 and cfg.skip_sessions == frozenset()
+    assert load({**BASE, "TAPES_EJECT_SKIP_SESSIONS": "a, b,"}).skip_sessions == {"a", "b"}
     assert cfg.experiment == "/Shared/tapes-eject"
     assert cfg.org_slug is None
 

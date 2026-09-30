@@ -166,11 +166,16 @@ def _output_tokens(item: dict) -> int:
 
 
 def too_big(
-    item: dict, max_turns: int, max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    item: dict,
+    max_turns: int,
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    skip: frozenset[str] = frozenset(),
 ) -> str | None:
     """Why this session list item must not be exported, or None. Judged from the list rollup
     alone, so no export request is made for a session that would be dropped anyway. Turn count
     misses a short session with enormous tool output; the rollup's output tokens catch it."""
+    if item.get("id") in skip:
+        return "in TAPES_EJECT_SKIP_SESSIONS: its export has taken Paper's service down"
     if _turns(item) > max_turns:
         return f"{_turns(item)} turns > max {max_turns}"
     if _output_tokens(item) > max_output_tokens:
@@ -184,13 +189,14 @@ def choose_sessions(
     sample: int,
     max_turns: int,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
+    skip: frozenset[str] = frozenset(),
 ) -> tuple[list[str], list[tuple[str, str]]]:
     """Every labeled session that is not too big, plus recent non-empty ones under the caps, so
     per-model and per-project rates have every session the labeler saw as their denominator."""
     ids: list[str] = []
     skipped: list[tuple[str, str]] = []
     for sid, it in labeled.items():
-        reason = too_big(it, max_turns, max_output_tokens)
+        reason = too_big(it, max_turns, max_output_tokens, skip)
         if reason:
             skipped.append((sid, reason))
         else:
@@ -200,21 +206,29 @@ def choose_sessions(
         for it in recent
         if it["id"] not in labeled
         and _turns(it) >= RECENT_MIN_TURNS
-        and too_big(it, max_turns, max_output_tokens) is None
+        and too_big(it, max_turns, max_output_tokens, skip) is None
     ]
     return ids + extra[:sample], skipped
+
+
+def _from_cache(sid: str, seen: str | None, cache_dir: Path | None) -> dict | None:
+    """The cached record when Paper says the session has not changed since, else None."""
+    path = cache_dir / f"{sid}.json" if cache_dir and seen else None
+    if path and path.exists():
+        cached = json.loads(path.read_text(encoding="utf-8"))
+        if cached.get("last_seen_at") == seen:
+            return cached["record"]
+    return None
 
 
 def _cached_export(
     paper, sid: str, seen: str | None, cache_dir: Path | None
 ) -> tuple[dict | None, bool]:
-    """(the session's record, whether Paper was asked for it). The local cache answers when
-    Paper says the session has not changed."""
+    """(the session's record, whether Paper was asked for it)."""
+    cached = _from_cache(sid, seen, cache_dir)
+    if cached is not None:
+        return cached, False
     path = cache_dir / f"{sid}.json" if cache_dir and seen else None
-    if path and path.exists():
-        cached = json.loads(path.read_text(encoding="utf-8"))
-        if cached.get("last_seen_at") == seen:
-            return cached["record"], False
     rec = paper.export_session(sid)
     if rec and path:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -222,7 +236,7 @@ def _cached_export(
     return rec, True
 
 
-OUTAGE_SIGNS = ("could not reach", "timed out")
+OUTAGE_SIGNS = ("could not reach", "timed out", "truncated")
 
 
 def is_outage(err: Exception) -> bool:
@@ -271,7 +285,12 @@ def run_export(
     since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     recent = paper.sessions(since=since, limit=cfg.sample_sessions * 3)
     ids, skipped = choose_sessions(
-        labeled, recent, cfg.sample_sessions, cfg.max_turns, cfg.max_output_tokens
+        labeled,
+        recent,
+        cfg.sample_sessions,
+        cfg.max_turns,
+        cfg.max_output_tokens,
+        cfg.skip_sessions,
     )
     items = {**{it["id"]: it for it in recent}, **labeled}
     failed: list[tuple[str, str]] = []
@@ -279,20 +298,25 @@ def run_export(
     parsed: dict[str, Session] = {}
     trace_session: dict[str, str] = {}
     span_trace: dict[str, str] = {}
+    outage = False  # after an outage-shaped failure, only the cache is read; no more requests
     for i, sid in enumerate(ids, 1):
-        log(f"[{i}/{len(ids)}] export {sid}")
-        try:
-            rec, fetched = _cached_export(
-                paper, sid, items.get(sid, {}).get("last_seen_at"), cache_dir
-            )
-        except PaperError as e:
-            failed.append((sid, str(e)))
-            if is_outage(e):
-                rest = ids[i:]
-                log(f"export service unreachable; stopping with {len(rest)} sessions not tried")
-                failed.extend((s, "not tried: export service unreachable") for s in rest)
-                break
-            continue
+        seen = items.get(sid, {}).get("last_seen_at")
+        if outage:
+            rec = _from_cache(sid, seen, cache_dir)
+            if rec is None:
+                failed.append((sid, "not tried: export service unreachable"))
+                continue
+            fetched = False
+        else:
+            log(f"[{i}/{len(ids)}] export {sid}")
+            try:
+                rec, fetched = _cached_export(paper, sid, seen, cache_dir)
+            except PaperError as e:
+                failed.append((sid, str(e)))
+                if is_outage(e):
+                    outage = True
+                    log("export service unreachable; reading the rest from the cache only")
+                continue
         if fetched and cfg.export_pause > 0:
             sleep(cfg.export_pause)
         if not rec:
