@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -22,7 +23,7 @@ from .config import CORRECTION_LABELS, DEFAULT_MAX_OUTPUT_TOKENS, NO_OUTCOME, Co
 from .paper import PaperError
 
 LEVELS = ("session", "trace", "span")
-RECENT_MIN_TURNS, RECENT_MAX_TURNS = 2, 40
+RECENT_MIN_TURNS = 1  # the size caps bound the other end
 
 
 @dataclass
@@ -119,10 +120,18 @@ def label_rows(
     return rows, unmapped
 
 
+def project_name(cwd: str | None) -> str | None:
+    """The last path segment of the session's working directory: the repo, without the home
+    directory or username above it."""
+    name = (cwd or "").rstrip("/").rsplit("/", 1)[-1]
+    return name or None
+
+
 def session_row(sess: Session, no_outcome: set[str], unknown: set[str] = frozenset()) -> dict:
     return {
         "session_id": sess.id,
         "title": scrub(sess.title),
+        "project": project_name(sess.cwd),
         "harness": sess.harness,
         "model": sess.model,
         "started_at": sess.started_at,
@@ -176,7 +185,8 @@ def choose_sessions(
     max_turns: int,
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
 ) -> tuple[list[str], list[tuple[str, str]]]:
-    """Every labeled session that is not too big, plus a sample of short recent ones."""
+    """Every labeled session that is not too big, plus recent non-empty ones under the caps, so
+    per-model and per-project rates have every session the labeler saw as their denominator."""
     ids: list[str] = []
     skipped: list[tuple[str, str]] = []
     for sid, it in labeled.items():
@@ -189,24 +199,37 @@ def choose_sessions(
         it["id"]
         for it in recent
         if it["id"] not in labeled
-        and RECENT_MIN_TURNS <= _turns(it) <= RECENT_MAX_TURNS
+        and _turns(it) >= RECENT_MIN_TURNS
         and too_big(it, max_turns, max_output_tokens) is None
     ]
     return ids + extra[:sample], skipped
 
 
-def _cached_export(paper, sid: str, seen: str | None, cache_dir: Path | None) -> dict | None:
-    """The session's record, from the local cache when Paper says it has not changed."""
+def _cached_export(
+    paper, sid: str, seen: str | None, cache_dir: Path | None
+) -> tuple[dict | None, bool]:
+    """(the session's record, whether Paper was asked for it). The local cache answers when
+    Paper says the session has not changed."""
     path = cache_dir / f"{sid}.json" if cache_dir and seen else None
     if path and path.exists():
         cached = json.loads(path.read_text(encoding="utf-8"))
         if cached.get("last_seen_at") == seen:
-            return cached["record"]
+            return cached["record"], False
     rec = paper.export_session(sid)
     if rec and path:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"last_seen_at": seen, "record": rec}), encoding="utf-8")
-    return rec
+    return rec, True
+
+
+OUTAGE_SIGNS = ("could not reach", "timed out")
+
+
+def is_outage(err: Exception) -> bool:
+    """An export failure that means the service is down, not that this session is bad. Carrying
+    on would pile requests onto a service that is already struggling."""
+    text = str(err)
+    return any(sign in text for sign in OUTAGE_SIGNS)
 
 
 def problems(report: dict) -> list[str]:
@@ -228,6 +251,7 @@ def run_export(
     with_evidence: bool = False,
     log: Callable[[str], None] = print,
     cache_dir: Path | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> Export:
     labels = [lab for lab in paper.labels() if any((lab.get("usage") or {}).get(t) for t in LEVELS)]
     attachments = {
@@ -258,10 +282,19 @@ def run_export(
     for i, sid in enumerate(ids, 1):
         log(f"[{i}/{len(ids)}] export {sid}")
         try:
-            rec = _cached_export(paper, sid, items.get(sid, {}).get("last_seen_at"), cache_dir)
+            rec, fetched = _cached_export(
+                paper, sid, items.get(sid, {}).get("last_seen_at"), cache_dir
+            )
         except PaperError as e:
             failed.append((sid, str(e)))
+            if is_outage(e):
+                rest = ids[i:]
+                log(f"export service unreachable; stopping with {len(rest)} sessions not tried")
+                failed.extend((s, "not tried: export service unreachable") for s in rest)
+                break
             continue
+        if fetched and cfg.export_pause > 0:
+            sleep(cfg.export_pause)
         if not rec:
             continue
         _, ts, st = index_record(rec)

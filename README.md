@@ -1,15 +1,14 @@
 # tapes-eject-databricks
 
-Paper labels your agent sessions. This demo takes those labels to Databricks, where they become datasets, evals, and a fine-tuned model.
+Paper labels your agent sessions. This demo takes those labels to Databricks, where they become governed tables you can ask questions of, and, optionally, a fine-tuned model.
 
-- **Act 1:** capture and label sessions in Paper.
-- **Act 2:** sync the labeled sessions into Unity Catalog and an MLflow evaluation dataset.
-- **Act 3:** run a supervised fine-tune (SFT) of Qwen3-4B on Databricks AI Runtime GPUs, using the sessions the labels selected.
-- **Act 4:** score the base and fine-tuned models against the eval cases in MLflow.
+- **Act 1:** sessions are captured and labeled in Paper: `pushback` where an engineer corrected the agent, `apology` where the agent backtracked, `golden` and `regression` by hand.
+- **Act 2:** sync the labeled sessions into Unity Catalog and ask the questions the labels answer: which model gets corrected most, which project, how that moves week over week.
+- **Act 3 (optional):** the same labels select training examples and evaluation cases; a fine-tune job runs on Databricks GPUs or a local card, and MLflow scores base against tuned.
 
-Nothing here is a new Paper feature. The demo builds on Paper's session export, Labels, and the autolabel cassette. "Eject" is only the demo's name.
+Nothing here is a new Paper feature. The demo builds on Paper's session export and Labels. "Eject" is only the demo's name. Labels are an input: the autolabel cassette can write them, and so can a person in the console.
 
-**Status:** code complete, with 59 unit tests passing. It has not yet run end to end against a Databricks workspace. `RUNBOOK.md` is the live demo script. The design is in [docs/specs/2026-09-29-databricks-labels-design.md](docs/specs/2026-09-29-databricks-labels-design.md), and the build plan is in [docs/superpowers/plans/2026-09-29-tapes-eject-databricks.md](docs/superpowers/plans/2026-09-29-tapes-eject-databricks.md).
+**Status:** Acts 1 and 2 run end to end against Paper and a Databricks workspace. Act 3 runs on a local GPU (the workspace used so far is Free Edition, which has no GPU quota). `RUNBOOK.md` is the live demo script. The design is in [docs/specs/2026-09-29-databricks-labels-design.md](docs/specs/2026-09-29-databricks-labels-design.md), and the build plan is in [docs/superpowers/plans/2026-09-29-tapes-eject-databricks.md](docs/superpowers/plans/2026-09-29-tapes-eject-databricks.md).
 
 ## A few Databricks words
 
@@ -101,51 +100,48 @@ If only **A10** is offered in your workspace, change `GPU_1xH100` to `GPU_1xA10`
 
 ## Running the demo
 
-### Act 1: Capture and label (Paper)
+### Act 1: Labels in Paper
 
 ```bash
-uv run tapes-eject label apology            # finds the label across the 25 newest sessions; writes nothing
-uv run tapes-eject label apology --apply    # labels them in Paper; the chips appear in the console
+uv run tapes-eject label apology --sessions 1000            # finds the label; writes nothing
+uv run tapes-eject label apology --sessions 1000 --apply    # writes it to Paper
+uv run tapes-eject label pushback --sessions 1000 --apply   # needs the cassette's TypeSafe key
 ```
 
-Sessions over `TAPES_EJECT_MAX_TURNS` or `TAPES_EJECT_MAX_OUTPUT_TOKENS` are printed as `skip` and never sent to the cassette, because exporting a very large session can take Paper's export service down.
+Sessions over `TAPES_EJECT_MAX_TURNS` or `TAPES_EJECT_MAX_OUTPUT_TOKENS` are printed as `skip` and never sent to the cassette, because exporting a very large session can take Paper's export service down. The seven autolabel labels are `apology`, `dream`, `subagents`, `no-outcome`, `pushback`, `question`, `observation`; `pushback`, `question`, and `observation` need the TypeSafe judge. In the console, mark a few good sessions `golden` and one failure `regression` by hand.
 
-You can use any of the seven labels: `apology`, `dream`, `subagents`, `no-outcome`, `pushback`, `question`, `observation`. In the console, also mark a few good sessions `golden` and one failure `regression` by hand.
-
-### Act 2: Curate (Paper → Unity Catalog)
+### Act 2: Labels become data (Paper → Unity Catalog)
 
 ```bash
-uv run tapes-eject export   # Paper's session export + Labels for every labeled session, into data/
-uv run tapes-eject count    # what the labels select: training examples, eval cases, golden, regression
-uv run tapes-eject sync     # tables + training examples into Unity Catalog, eval cases into MLflow
+uv run tapes-eject export   # sessions, turns, and labels into data/
+uv run tapes-eject count    # what the labels select
+uv run tapes-eject sync     # tables and views into Unity Catalog, eval cases into MLflow
+uv run tapes-eject report                          # which model carries each label, as a rate
+uv run tapes-eject report --by project --label pushback
+uv run tapes-eject report --by week
 ```
 
-- **`export`** skips sessions over `TAPES_EJECT_MAX_TURNS` or `TAPES_EJECT_MAX_OUTPUT_TOKENS` and lists them under `skipped` in `data/report.json`. It caches each session in `data/cache/`, so re-running it only fetches sessions that changed. It exits non-zero if any export failed or any outcome is unknown. `data/report.json` says which.
-- **`sync`** refuses a partial or empty export, because syncing one would wipe good data. Re-run `export`, or pass `--force` if you mean it.
-- **What to open afterwards:** Catalog → your catalog → `agent_sessions`, where `labels` → History shows one version per sync. Then MLflow → Datasets → `eval_cases`.
+- **`export`** pulls every labeled session plus every recent non-empty session under the size caps (up to `TAPES_EJECT_SAMPLE_SESSIONS`), so each model's and project's rate has every session the labeler saw as its denominator. It skips sessions over the caps and lists them under `skipped` in `data/report.json`. It caches each session in `data/cache/`, so re-running it only fetches sessions that changed. It exits non-zero if any export failed or any outcome is unknown.
+- **`sync`** loads `sessions`, `turns`, `labels`, and `training_input`, then creates four views: `labels_by_model`, `labels_by_project`, `labels_by_week`, and `corrections` (each corrected turn with the engineer's words, joined to its model and project). It refuses a partial or empty export, because syncing one would wipe good data. Re-run `export`, or pass `--force` if you mean it.
+- **`report`** prints a view in the terminal. The same views back a Databricks SQL query or an AI/BI dashboard.
+- **What to open afterwards:** Catalog → your catalog → `agent_sessions`, where `labels` → History shows one version per sync, and the views under it. A SQL editor on `corrections` shows the actual moments engineers stepped in.
 
 How the labels decide the data:
 - **Training data:** sessions that produced an outcome and carry no `pushback`, `apology`, `missing-knowledge`, `model-error`, `observation`, or `regression` label. Four in five `golden` sessions are training data too.
 - **Eval cases:** every turn an engineer corrected (`pushback`, `observation`, `missing-knowledge`), every `regression` session, and the other one in five `golden` sessions. A session is never both training data and an eval case.
 
-### Act 3: Train on Databricks GPUs
+### Act 3 (optional): Train and score
+
+On Databricks GPUs, once the workspace has quota:
 
 ```bash
 databricks bundle run sft_train --params max_steps=5    # smoke run; check the cost first
-uv run tapes-eject spend                                # spend so far, out of $400
 databricks bundle run sft_train --params max_steps=0    # full run: 2 epochs
+databricks bundle run eval_models --params limit=5      # smoke run on 5 cases
+databricks bundle run eval_models --params limit=0      # every case
 ```
 
-The job fine-tunes Qwen3-4B on the training examples, logs the run to MLflow experiment `/Shared/tapes-eject`, and registers `<catalog>.agent_sessions.agent_qwen3_4b` in Unity Catalog. If the full fine-tune runs out of memory, add `method=lora`.
-
-### Act 4: Prove it
-
-```bash
-databricks bundle run eval_models --params limit=5    # smoke run on 5 cases
-databricks bundle run eval_models --params limit=0    # every case
-```
-
-In MLflow, select the `eval-base` and `eval-tuned` runs and choose **Compare**. The guideline pass rate is the Act 4 number.
+The job fine-tunes Qwen3-4B on the training examples, logs the run to MLflow experiment `/Shared/tapes-eject`, and registers `<catalog>.agent_sessions.agent_qwen3_4b` in Unity Catalog. In MLflow, select the `eval-base` and `eval-tuned` runs and choose **Compare**. If the full fine-tune runs out of memory, add `method=lora`.
 
 To show the fine-tuned model live:
 
@@ -154,6 +150,8 @@ uv run tapes-eject serve --version <model version>    # A10 endpoint; scales to 
 uv run tapes-eject ask "Add a --dry-run flag to the export command"
 uv run tapes-eject unserve                            # delete it when the demo is over
 ```
+
+Without GPU quota, the next section runs the same steps on a local card.
 
 ## Acts 3 and 4 on a local GPU
 
@@ -186,6 +184,7 @@ The tuned weights stay on local disk and are not registered in Unity Catalog. If
 | `label <name> [--apply]` | Finds a label across recent sessions through the autolabel cassette; `--apply` writes it to Paper |
 | `export [--evidence] [--allow-partial]` | Pulls labeled sessions and their labels from Paper into `data/` |
 | `count` | Shows how much training and eval data the labels select |
+| `report [--by model\|project\|week] [--label L]` | Prints which model, project, or week carries each label, from the views `sync` created |
 | `sync [--force]` | Loads `data/` into Unity Catalog and the MLflow evaluation dataset |
 | `serve --version N` / `unserve` / `ask "<prompt>"` | Creates, deletes, and queries the fine-tuned model's endpoint; `ask --url` queries a local `train/local_serve.py` instead |
 | `spend [--since YYYY-MM-DD]` | Shows Databricks spend from the system billing tables |
