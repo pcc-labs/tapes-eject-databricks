@@ -4,6 +4,13 @@ Only Paper and Databricks appear on screen. Say "a supervised fine-tune of an op
 
 ## The day before
 
+Rules for anything that fetches sessions from Paper (`label`, `export`), learned the hard way (docs/postmortems/2026-09-30-paper-export-outages.md):
+
+- Probe first: `paperctl sessions export <a tiny session id> | head -c 80`. If it does not answer, wait; do not start a run.
+- One run at a time. Never a `label` run and an `export` at once.
+- If a run reports "export service unreachable", stop. Do not retry it. It has already fallen back to the cache; the next run, later, fetches only what is missing.
+- Run `export` the day before, not only on stage. The live `export` in Act 2 then reads from `data/cache/` and fetches only what changed.
+
 - [ ] `uv run tapes-eject doctor`: all `ok`
 - [ ] The autolabel cassette is running with `TYPESAFE_API_KEY` set
 - [ ] `export` (fills `data/cache/`, so the live re-export is fast), `sync`, and the full `sft_train` and `eval_models` runs are done. Note the model version and both pass rates here: base ____ / tuned ____
