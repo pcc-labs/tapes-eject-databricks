@@ -29,6 +29,20 @@
 
 5. **We kept retrying into an outage.** Retrying a run right after a failure, and running two runs at once, prolonged the outages. On the first evening the diagnostic loop of 25 exports started while the service was already down.
 
+## How this is prevented from now on
+
+Each outage had a trigger; each trigger now has a guard. The first three are code and cannot be skipped by accident. The last two are rules for whoever runs the pipeline.
+
+| Trigger | Guard | Where | Owner |
+|---|---|---|---|
+| Streaming session exports through the export cassette | Records come from core's traces endpoint via paperd's proxy; the wrapper is only a fallback when the daemon has no proxy | `Paper.export_session` | this repo |
+| Hundreds of re-exports of empty sessions per run | Zero-turn sessions are never sent to the cassette | `label_candidates` | this repo |
+| Continuing to request into a down service | After one outage-shaped failure the export loop makes no more requests and reads the rest from `data/cache/`; a truncated record is a failure, never cached | `run_export`, `Paper.export_session` | this repo |
+| Bursts | One request per second between real fetches (`TAPES_EJECT_EXPORT_PAUSE`); one run at a time, never a label run and an export in parallel | config; RUNBOOK | operator |
+| Retrying a failed run immediately | Probe the service with one tiny session first; if it does not answer, wait, do not retry the run | RUNBOOK | operator |
+
+What is not covered here, and would prevent it for every client rather than this one: the export cassette releasing whatever it holds per request (Paper), the autolabel cassette treating unparseable sessions as known-empty and validating downloads (cassette repo, or moot once autolabel ships as a feature, #5), and `paperctl sessions export` failing on a partial write instead of exiting 0.
+
 ## What we changed (this repo)
 
 - Session records are fetched from core's traces endpoint through paperd's proxy, found once from `paperctl status`; `paperctl sessions export` is the fallback when the daemon reports no proxy. (#6)
