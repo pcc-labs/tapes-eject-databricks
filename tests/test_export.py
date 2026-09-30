@@ -60,8 +60,9 @@ class FakeAutolabel:
         return {}, None
 
 
-def item(sid, turns=3, seen="2026-09-01T00:00:00Z"):
-    return {"id": sid, "last_seen_at": seen, "rollup": {"turn_count": turns}}
+def item(sid, turns=3, seen="2026-09-01T00:00:00Z", output_tokens=0):
+    rollup = {"turn_count": turns, "usage": {"output_tokens": output_tokens}}
+    return {"id": sid, "last_seen_at": seen, "rollup": rollup}
 
 
 def att(ptype, pid):
@@ -99,6 +100,20 @@ def test_choose_sessions_skips_oversized_labeled_and_samples_short_recent():
     ids, skipped = choose_sessions(labeled, recent, sample=1, max_turns=150)
     assert ids == ["s1", "r2"]
     assert skipped == [("big", "300 turns > max 150")]
+
+
+def test_choose_sessions_skips_short_sessions_with_huge_output():
+    """Three turns but 800k output tokens: the shape whose export has taken Paper down."""
+    labeled = {"whale": item("whale", 3, output_tokens=800_000), "s1": item("s1", 4)}
+    recent = [item("r1", 10, output_tokens=2_744_041), item("r2", 10, output_tokens=295_000)]
+    ids, skipped = choose_sessions(labeled, recent, sample=5, max_turns=150)
+    assert ids == ["s1", "r2"]
+    assert skipped == [("whale", "800000 output tokens > max 400000")]
+    assert choose_sessions(labeled, recent, 5, 150, max_output_tokens=900_000)[0] == [
+        "whale",
+        "s1",
+        "r2",
+    ]
 
 
 def test_turn_rows_are_redacted():

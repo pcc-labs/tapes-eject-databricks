@@ -18,7 +18,7 @@ from typing import Callable
 from label_sampler.session import Session, parse_session
 
 from .autolabel import AutolabelError
-from .config import CORRECTION_LABELS, NO_OUTCOME, Config
+from .config import CORRECTION_LABELS, DEFAULT_MAX_OUTPUT_TOKENS, NO_OUTCOME, Config
 from .paper import PaperError
 
 LEVELS = ("session", "trace", "span")
@@ -151,21 +151,46 @@ def _turns(item: dict) -> int:
     return int((item.get("rollup") or {}).get("turn_count") or 0)
 
 
+def _output_tokens(item: dict) -> int:
+    usage = (item.get("rollup") or {}).get("usage") or {}
+    return int(usage.get("output_tokens") or 0)
+
+
+def too_big(
+    item: dict, max_turns: int, max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+) -> str | None:
+    """Why this session list item must not be exported, or None. Judged from the list rollup
+    alone, so no export request is made for a session that would be dropped anyway. Turn count
+    misses a short session with enormous tool output; the rollup's output tokens catch it."""
+    if _turns(item) > max_turns:
+        return f"{_turns(item)} turns > max {max_turns}"
+    if _output_tokens(item) > max_output_tokens:
+        return f"{_output_tokens(item)} output tokens > max {max_output_tokens}"
+    return None
+
+
 def choose_sessions(
-    labeled: dict[str, dict], recent: list[dict], sample: int, max_turns: int
+    labeled: dict[str, dict],
+    recent: list[dict],
+    sample: int,
+    max_turns: int,
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS,
 ) -> tuple[list[str], list[tuple[str, str]]]:
-    """Every labeled session that is not too long, plus a sample of short recent ones."""
+    """Every labeled session that is not too big, plus a sample of short recent ones."""
     ids: list[str] = []
     skipped: list[tuple[str, str]] = []
     for sid, it in labeled.items():
-        if _turns(it) > max_turns:
-            skipped.append((sid, f"{_turns(it)} turns > max {max_turns}"))
+        reason = too_big(it, max_turns, max_output_tokens)
+        if reason:
+            skipped.append((sid, reason))
         else:
             ids.append(sid)
     extra = [
         it["id"]
         for it in recent
-        if it["id"] not in labeled and RECENT_MIN_TURNS <= _turns(it) <= RECENT_MAX_TURNS
+        if it["id"] not in labeled
+        and RECENT_MIN_TURNS <= _turns(it) <= RECENT_MAX_TURNS
+        and too_big(it, max_turns, max_output_tokens) is None
     ]
     return ids + extra[:sample], skipped
 
@@ -221,7 +246,9 @@ def run_export(
                 labeled[it["id"]] = it
     since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
     recent = paper.sessions(since=since, limit=cfg.sample_sessions * 3)
-    ids, skipped = choose_sessions(labeled, recent, cfg.sample_sessions, cfg.max_turns)
+    ids, skipped = choose_sessions(
+        labeled, recent, cfg.sample_sessions, cfg.max_turns, cfg.max_output_tokens
+    )
     items = {**{it["id"]: it for it in recent}, **labeled}
     failed: list[tuple[str, str]] = []
 

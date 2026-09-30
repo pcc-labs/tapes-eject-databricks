@@ -9,7 +9,7 @@ import sys
 from . import config, curate, doctor, serve
 from .autolabel import Autolabel
 from .databricks_io import Databricks
-from .export import problems, run_export, write_export
+from .export import problems, run_export, too_big, write_export
 from .paper import Paper
 from .sync import run_sync
 
@@ -22,9 +22,31 @@ def cmd_doctor(cfg: config.Config, args: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def label_candidates(
+    items: list[dict], cfg: config.Config
+) -> tuple[list[str], list[tuple[str, str]]]:
+    """(ids to send to the cassette, (id, reason) for each session over the size caps)."""
+    ids: list[str] = []
+    skipped: list[tuple[str, str]] = []
+    for it in items:
+        reason = too_big(it, cfg.max_turns, cfg.max_output_tokens)
+        if reason:
+            skipped.append((it["id"], reason))
+        else:
+            ids.append(it["id"])
+    return ids, skipped
+
+
 def cmd_label(cfg: config.Config, args: argparse.Namespace) -> int:
-    """Find a label across the newest sessions; with --apply, label them in Paper."""
-    ids = [s["id"] for s in Paper(org_slug=cfg.org_slug).sessions(limit=args.sessions)]
+    """Find a label across the newest sessions; with --apply, label them in Paper. Sessions
+    over the size caps are left out before the cassette exports anything."""
+    items = Paper(org_slug=cfg.org_slug).sessions(limit=args.sessions)
+    ids, skipped = label_candidates(items, cfg)
+    for sid, reason in skipped:
+        print(f"  skip {sid}: {reason}")
+    if not ids:
+        print(f"{args.name}: none of the {len(items)} newest sessions are under the size caps")
+        return 1
     client = Autolabel(cfg.autolabel_url)
     res = client.run(args.name, ids, apply=False, on_progress=lambda p: print(f"  {p}"))
     if res.get("reason"):

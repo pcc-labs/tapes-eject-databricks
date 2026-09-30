@@ -16,6 +16,10 @@ REGRESSION = "regression"
 NO_OUTCOME = "no-outcome"
 
 DEFAULT_AUTOLABEL_URL = "http://127.0.0.1:9996/v1/cassettes/autolabel"
+# Sessions whose rollup shows more output tokens than this are never exported. Turn count
+# alone misses a session of three turns whose tool output runs to hundreds of megabytes, and
+# exporting one of those has taken Paper's export service down.
+DEFAULT_MAX_OUTPUT_TOKENS = 400_000
 
 
 @dataclass(frozen=True)
@@ -29,6 +33,7 @@ class Config:
     org_slug: str | None = None
     sample_sessions: int = 200
     max_turns: int = 150
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     experiment: str = "/Shared/tapes-eject"
     data_dir: Path = Path("data")
 
@@ -65,6 +70,9 @@ def load(env: dict[str, str] | None = None) -> Config:
         org_slug=env.get("PAPER_ORG_SLUG") or None,
         sample_sessions=int(env.get("TAPES_EJECT_SAMPLE_SESSIONS") or 200),
         max_turns=int(env.get("TAPES_EJECT_MAX_TURNS") or 150),
+        max_output_tokens=int(
+            env.get("TAPES_EJECT_MAX_OUTPUT_TOKENS") or DEFAULT_MAX_OUTPUT_TOKENS
+        ),
     )
 
 
