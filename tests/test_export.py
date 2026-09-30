@@ -2,7 +2,6 @@ import json
 
 from label_sampler.session import parse_session
 
-from tapes_eject.autolabel import AutolabelError
 from tapes_eject.config import load
 from tapes_eject.export import (
     choose_sessions,
@@ -54,19 +53,6 @@ class FakePaper:
         if session_id in self._fail:
             raise PaperError("paperctl sessions export timed out after 300s")
         return self._records.get(session_id)
-
-
-class FakeAutolabel:
-    def __init__(self, no_outcome=(), error=None, unknown=()):
-        self.no_outcome, self.error, self.unknown = set(no_outcome), error, set(unknown)
-
-    def matched_sessions(self, label, ids, chunk=25):
-        if self.error:
-            raise self.error
-        return self.no_outcome & set(ids), self.unknown & set(ids)
-
-    def turn_evidence(self, label, ids, chunk=25):
-        return {}, None
 
 
 def item(sid, turns=3, seen="2026-09-01T00:00:00Z", output_tokens=0):
@@ -179,10 +165,10 @@ def test_run_export_reads_only_the_cache_after_an_outage(tmp_path):
     # A warm pass caches s1 and s2. Then s1 is dropped from the cache and its fetch fails
     # outage-shaped: s2 still comes from the cache, s3 is not tried.
     warm = _paper()
-    run_export(warm, FakeAutolabel(), CFG, log=lambda m: None, cache_dir=tmp_path)
+    run_export(warm, CFG, log=lambda m: None, cache_dir=tmp_path)
     (tmp_path / "s1.json").unlink()
     paper = _paper(fail={"s1"})
-    ex = run_export(paper, FakeAutolabel(), CFG, log=lambda m: None, cache_dir=tmp_path)
+    ex = run_export(paper, CFG, log=lambda m: None, cache_dir=tmp_path)
     assert paper.exported == ["s1"]  # nothing was requested after the outage
     assert {s["session_id"] for s in ex.sessions} == {"s2"}
     assert ex.failed == [
@@ -197,36 +183,25 @@ def test_run_export_reads_only_the_cache_after_an_outage(tmp_path):
 def test_run_export_pauses_after_each_fetch_but_not_after_a_cache_hit(tmp_path):
     paper = _paper()
     naps: list[float] = []
-    run_export(
-        paper, FakeAutolabel(), PAUSED, log=lambda m: None, cache_dir=tmp_path, sleep=naps.append
-    )
+    run_export(paper, PAUSED, log=lambda m: None, cache_dir=tmp_path, sleep=naps.append)
     assert paper.exported == ["s1", "s2", "s3"] and naps == [1.0, 1.0, 1.0]
     paper2 = _paper()
     naps2: list[float] = []
-    run_export(
-        paper2, FakeAutolabel(), PAUSED, log=lambda m: None, cache_dir=tmp_path, sleep=naps2.append
-    )
+    run_export(paper2, PAUSED, log=lambda m: None, cache_dir=tmp_path, sleep=naps2.append)
     assert paper2.exported == ["s3"] and naps2 == [1.0]  # s3 has no record, so it is never cached
 
 
 def test_run_export_continues_past_a_failed_export_and_reports_it(tmp_path):
-    ex = run_export(_paper(fail={"s3"}), FakeAutolabel(no_outcome={"s2"}), CFG, log=lambda m: None)
+    ex = run_export(_paper(fail={"s3"}), CFG, log=lambda m: None)
     assert {s["session_id"] for s in ex.sessions} == {"s1", "s2"}
     assert ex.failed == [("s3", "paperctl sessions export timed out after 300s")]
-    assert {s["session_id"]: s["has_outcome"] for s in ex.sessions} == {"s1": True, "s2": False}
+    assert {s["session_id"]: s["has_outcome"] for s in ex.sessions} == {"s1": True, "s2": True}
     assert [u["primitive_id"] for u in ex.unmapped] == ["trc_elsewhere"]
     write_export(ex, tmp_path)
     report = json.loads((tmp_path / "report.json").read_text())
     assert report["failed"] == [["s3", "paperctl sessions export timed out after 300s"]]
     assert report["unmapped"] == 1 and report["outcome_unknown"] == 0
     assert len((tmp_path / "labels.jsonl").read_text().splitlines()) == 3
-
-
-def test_run_export_marks_outcome_unknown_when_the_cassette_is_down():
-    down = FakeAutolabel(error=AutolabelError("POST .../run: unreachable"))
-    ex = run_export(_paper(), down, CFG, log=lambda m: None)
-    assert ex.outcome_known is False
-    assert all(s["has_outcome"] is None for s in ex.sessions)
 
 
 def test_span_ids_in_papers_trace_tilde_span_shape_map_through_their_trace():
@@ -244,7 +219,7 @@ def test_span_ids_in_papers_trace_tilde_span_shape_map_through_their_trace():
 def test_oversized_sessions_are_skipped_not_failed(tmp_path):
     paper = _paper()
     paper._by_label["pushback"] = [item("s1", turns=500)]
-    ex = run_export(paper, FakeAutolabel(), CFG, log=lambda m: None)
+    ex = run_export(paper, CFG, log=lambda m: None)
     assert ex.skipped == [("s1", "500 turns > max 150")]
     assert ex.failed == []
 
@@ -257,34 +232,29 @@ def test_problems_flag_failed_exports_empty_exports_and_unknown_outcomes():
     assert problems({**ok, "outcome_unknown": 2}) == ["outcome unknown for 2 sessions"]
 
 
-def test_only_the_sessions_the_cassette_could_not_read_are_outcome_unknown():
-    ex = run_export(_paper(), FakeAutolabel(unknown={"s2"}), CFG, log=lambda m: None)
-    assert {s["session_id"]: s["has_outcome"] for s in ex.sessions} == {"s1": True, "s2": None}
-
-
 def test_papers_own_no_outcome_label_counts_as_no_outcome():
     paper = _paper()
     paper._labels.append({"id": "L2", "name": "no-outcome", "usage": {"session": 1}})
     paper._att[("L2", "session")] = [att("session", "s1")]
-    ex = run_export(paper, FakeAutolabel(), CFG, log=lambda m: None)
+    ex = run_export(paper, CFG, log=lambda m: None)
     assert {s["session_id"]: s["has_outcome"] for s in ex.sessions}["s1"] is False
 
 
 def test_an_unchanged_session_is_read_from_the_cache_on_the_next_export(tmp_path):
     first = _paper()
-    run_export(first, FakeAutolabel(), CFG, log=lambda m: None, cache_dir=tmp_path)
+    run_export(first, CFG, log=lambda m: None, cache_dir=tmp_path)
     assert sorted(first.exported) == ["s1", "s2", "s3"]
     again = _paper()
-    ex = run_export(again, FakeAutolabel(), CFG, log=lambda m: None, cache_dir=tmp_path)
+    ex = run_export(again, CFG, log=lambda m: None, cache_dir=tmp_path)
     assert again.exported == ["s3"]  # s3 has no record, so nothing was cached for it
     assert {s["session_id"] for s in ex.sessions} == {"s1", "s2"}
 
 
 def test_a_changed_session_is_exported_again(tmp_path):
-    run_export(_paper(), FakeAutolabel(), CFG, log=lambda m: None, cache_dir=tmp_path)
+    run_export(_paper(), CFG, log=lambda m: None, cache_dir=tmp_path)
     moved = _paper()
     moved._recent[1] = item("s2", seen="2026-09-02T00:00:00Z")
-    run_export(moved, FakeAutolabel(), CFG, log=lambda m: None, cache_dir=tmp_path)
+    run_export(moved, CFG, log=lambda m: None, cache_dir=tmp_path)
     assert moved.exported == ["s2", "s3"]
 
 

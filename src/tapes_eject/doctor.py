@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import functools
-import json
 import subprocess
-import urllib.request
 from typing import Callable
 
-from .config import Config, ping_url
+from .config import Config
 
 Check = tuple[str, Callable[[], str]]
 
@@ -45,18 +43,6 @@ def _paper_org() -> str:
     raise RuntimeError("`paperctl whoami` printed no org_slug")
 
 
-def _autolabel(cfg: Config) -> str:
-    with urllib.request.urlopen(ping_url(cfg.autolabel_url), timeout=5) as resp:
-        ping = json.loads(resp.read())
-    org = cfg.org_slug or _paper_org()
-    if ping.get("org") != org:
-        raise RuntimeError(
-            f"cassette org is {ping.get('org')!r}, Paper org is {org!r}: set LABEL_SAMPLER_ORG"
-        )
-    judge = "on" if ping.get("judge") else "OFF (pushback/question/observation answer needs_judge)"
-    return f"org={org} judge={judge}"
-
-
 @functools.lru_cache(maxsize=None)
 def _workspace(profile: str):
     from databricks.sdk import WorkspaceClient
@@ -81,7 +67,6 @@ def checks(cfg: Config) -> list[Check]:
     return [
         ("paperd", _paperd),
         ("paper org", lambda: cfg.org_slug or _paper_org()),
-        ("autolabel cassette", lambda: _autolabel(cfg)),
         ("databricks auth", lambda: w().current_user.me().user_name),
         ("sql warehouse", lambda: str(w().warehouses.get(cfg.warehouse_id).state)),
         ("catalog", lambda: w().catalogs.get(cfg.catalog).name),

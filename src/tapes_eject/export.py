@@ -1,4 +1,5 @@
-"""Paper -> redacted rows. Labels come from paperd; outcomes from the autolabel cassette.
+"""Paper -> redacted rows. Labels, including `no-outcome`, come from Paper; nothing here calls
+the autolabel cassette.
 
 Session text is parsed and redacted by label_sampler (the autolabel cassette's own parser), then
 scrubbed again here for shapes it misses. Redaction is pattern-based: it lowers the risk of a
@@ -18,8 +19,7 @@ from typing import Callable
 
 from label_sampler.session import Session, parse_session
 
-from .autolabel import AutolabelError
-from .config import CORRECTION_LABELS, DEFAULT_MAX_OUTPUT_TOKENS, NO_OUTCOME, Config
+from .config import DEFAULT_MAX_OUTPUT_TOKENS, NO_OUTCOME, Config
 from .paper import PaperError
 
 LEVELS = ("session", "trace", "span")
@@ -260,9 +260,7 @@ def problems(report: dict) -> list[str]:
 
 def run_export(
     paper,
-    autolabel,
     cfg: Config,
-    with_evidence: bool = False,
     log: Callable[[str], None] = print,
     cache_dir: Path | None = None,
     sleep: Callable[[float], None] = time.sleep,
@@ -328,43 +326,24 @@ def run_export(
         if sess is not None:
             parsed[sess.id] = sess
 
-    # Paper's own no-outcome label is the record; the cassette's detector fills in the rest.
+    # Paper's `no-outcome` label is the record of a session that produced nothing. A session
+    # without it is taken to have an outcome: labels are an input here, not something to
+    # recompute.
     no_outcome = {
         a["primitive_id"]
         for a in attachments.get(NO_OUTCOME, [])
         if a["primitive_type"] == "session"
     }
-    try:
-        found, unknown = autolabel.matched_sessions(NO_OUTCOME, list(parsed))
-        no_outcome |= found
-    except AutolabelError as e:
-        unknown = set(parsed)
-        log(f"warning: {e}")
-    unknown -= no_outcome
-    if unknown:
-        log(f"warning: outcome unknown for {len(unknown)} sessions; they are not training data")
 
-    evidence: dict[tuple[str, str], str] = {}
-    if with_evidence:
-        for label in CORRECTION_LABELS:
-            try:
-                found, reason = autolabel.turn_evidence(label, list(parsed))
-            except AutolabelError as e:
-                log(f"warning: {label} evidence skipped: {e}")
-                continue
-            if reason:
-                log(f"warning: {label}: {reason}")
-            evidence.update({(label, tid): text for tid, text in found.items()})
-
-    rows, unmapped = label_rows(attachments, trace_session, span_trace, evidence)
+    rows, unmapped = label_rows(attachments, trace_session, span_trace)
     return Export(
-        sessions=[session_row(s, no_outcome, unknown) for s in parsed.values()],
+        sessions=[session_row(s, no_outcome) for s in parsed.values()],
         turns=[r for s in parsed.values() for r in turn_rows(s)],
         labels=rows,
         failed=failed,
         unmapped=unmapped,
         skipped=skipped,
-        outcome_unknown=len(unknown),
+        outcome_unknown=0,
     )
 
 
