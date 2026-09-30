@@ -4,6 +4,11 @@ bundle:
 include:
   - resources/*.yml
 
+variables:
+  catalog:
+    description: Unity Catalog catalog that holds the agent_sessions schema
+    default: workspace
+
 sync:
   include:
     - train/*.py

@@ -1,0 +1,61 @@
+# The two AI Runtime (serverless GPU) jobs. Task-level `compute.hardware_accelerator` and the
+# `base_environment` are the bundle's serverless-GPU settings (both in Beta on the Jobs API).
+resources:
+  jobs:
+    sft_train:
+      name: sft_train
+      timeout_seconds: 7200
+      max_concurrent_runs: 1
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: agent_sessions
+        - name: max_steps
+          default: "5"
+        - name: method
+          default: full
+        - name: min_examples
+          default: "20"
+        - name: base_model
+          default: Qwen/Qwen3-4B
+        - name: experiment
+          default: /Shared/tapes-eject
+      environments:
+        - environment_key: aiv6
+          spec:
+            base_environment: databricks_ai_v6
+      tasks:
+        - task_key: sft_train
+          environment_key: aiv6
+          compute:
+            hardware_accelerator: GPU_1xH100
+          notebook_task:
+            notebook_path: ../train/sft_train.py
+
+    eval_models:
+      name: eval_models
+      timeout_seconds: 7200
+      max_concurrent_runs: 1
+      parameters:
+        - name: catalog
+          default: ${var.catalog}
+        - name: schema
+          default: agent_sessions
+        - name: base_model
+          default: Qwen/Qwen3-4B
+        - name: experiment
+          default: /Shared/tapes-eject
+        - name: limit
+          default: "5"
+      environments:
+        - environment_key: aiv6
+          spec:
+            base_environment: databricks_ai_v6
+      tasks:
+        - task_key: eval_models
+          environment_key: aiv6
+          compute:
+            hardware_accelerator: GPU_1xA10
+          notebook_task:
+            notebook_path: ../train/eval_models.py
