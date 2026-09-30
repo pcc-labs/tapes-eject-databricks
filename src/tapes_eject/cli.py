@@ -29,6 +29,8 @@ def label_candidates(
     ids: list[str] = []
     skipped: list[tuple[str, str]] = []
     for it in items:
+        if not ((it.get("rollup") or {}).get("turn_count") or 0):
+            continue  # an empty session cannot carry a label; do not export it
         reason = too_big(it, cfg.max_turns, cfg.max_output_tokens)
         if reason:
             skipped.append((it["id"], reason))
@@ -158,6 +160,41 @@ def cmd_ask(cfg: config.Config, args: argparse.Namespace) -> int:
     return 0
 
 
+REPORT_DIMS = ("model", "project", "week")
+
+
+def report_sql(cfg: config.Config, by: str, label: str | None) -> str:
+    """The Act 2 question: which <by> carries each label most, from the views sync created."""
+    if by not in REPORT_DIMS:
+        raise ValueError(f"--by must be one of {REPORT_DIMS}, not {by!r}")
+    where = f" WHERE label = '{label}'" if label else ""
+    if by == "week":
+        return (
+            f"SELECT week, label, sessions_with_label FROM {cfg.table('labels_by_week')}"
+            f"{where} ORDER BY week, label"
+        )
+    return (
+        f"SELECT {by}, label, sessions_with_label, sessions, rate "
+        f"FROM {cfg.table('labels_by_' + by)}{where} ORDER BY label, rate DESC, sessions DESC"
+    )
+
+
+def cmd_report(cfg: config.Config, args: argparse.Namespace) -> int:
+    rows = Databricks(cfg).sql(report_sql(cfg, args.by, args.label))
+    if not rows:
+        print("no rows: run `tapes-eject sync` first, or the labels selected nothing")
+        return 1
+    if args.by == "week":
+        print(f"{'week':<12} {'label':<18} {'sessions':>8}")
+        for week, label, n in rows:
+            print(f"{str(week)[:10]:<12} {label:<18} {n:>8}")
+        return 0
+    print(f"{args.by:<36} {'label':<18} {'with':>5} {'of':>5} {'rate':>6}")
+    for dim, label, hits, total, rate in rows:
+        print(f"{str(dim):<36} {label:<18} {hits:>5} {total:>5} {float(rate):>6.1%}")
+    return 0
+
+
 def cmd_spend(cfg: config.Config, args: argparse.Namespace) -> int:
     try:
         rows = Databricks(cfg).sql(serve.spend_sql(args.since))
@@ -208,6 +245,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--url", help="a local train/local_serve.py instead, e.g. http://127.0.0.1:8081"
     )
     ask.set_defaults(fn=cmd_ask)
+    rp = sub.add_parser("report", help="Act 2: which model, project, or week carries each label")
+    rp.add_argument("--by", choices=REPORT_DIMS, default="model")
+    rp.add_argument("--label", help="one label only, e.g. pushback")
+    rp.set_defaults(fn=cmd_report)
     sp = sub.add_parser("spend", help="Databricks spend since a date, from system billing tables")
     sp.add_argument("--since", default="2026-09-29")
     sp.set_defaults(fn=cmd_spend)

@@ -21,6 +21,15 @@ CFG = load(
         "TAPES_EJECT_CATALOG": "demo",
         "DATABRICKS_WAREHOUSE_ID": "wh",
         "TAPES_EJECT_SAMPLE_SESSIONS": "5",
+        "TAPES_EJECT_EXPORT_PAUSE": "0",
+    }
+)
+PAUSED = load(
+    {
+        **{k: v for k, v in CFG.__dict__.items() if False},
+        "TAPES_EJECT_CATALOG": "demo",
+        "DATABRICKS_WAREHOUSE_ID": "wh",
+        "TAPES_EJECT_SAMPLE_SESSIONS": "5",
     }
 )
 
@@ -94,11 +103,11 @@ def test_label_rows_skip_non_session_primitives():
     assert rows == []
 
 
-def test_choose_sessions_skips_oversized_labeled_and_samples_short_recent():
+def test_choose_sessions_skips_oversized_labeled_and_samples_recent_under_the_caps():
     labeled = {"big": item("big", 300), "s1": item("s1", 4)}
-    recent = [item("s1"), item("r1", 1), item("r2", 10), item("r3", 60), item("r4", 5)]
-    ids, skipped = choose_sessions(labeled, recent, sample=1, max_turns=150)
-    assert ids == ["s1", "r2"]
+    recent = [item("s1"), item("r0", 0), item("r1", 1), item("r2", 10), item("r3", 160)]
+    ids, skipped = choose_sessions(labeled, recent, sample=2, max_turns=150)
+    assert ids == ["s1", "r1", "r2"]  # empty and over-cap sessions are never sampled
     assert skipped == [("big", "300 turns > max 150")]
 
 
@@ -114,6 +123,21 @@ def test_choose_sessions_skips_short_sessions_with_huge_output():
         "s1",
         "r2",
     ]
+
+
+def test_session_row_carries_the_project_from_the_cwd():
+    from tapes_eject.export import project_name, session_row
+
+    assert (
+        project_name("/home/someone/code/pcc-labs/tapes-eject-databricks")
+        == "tapes-eject-databricks"
+    )
+    assert (
+        project_name("/repo/") == "repo" and project_name(None) is None and project_name("") is None
+    )
+    rec = record("s1", [("trc_1", "hi", "ok")])
+    rec["session"]["cwd"] = "/Users/x/Projects/site"
+    assert session_row(parse_session(rec), set())["project"] == "site"
 
 
 def test_turn_rows_are_redacted():
@@ -140,6 +164,34 @@ def _paper(fail=()):
         },
         fail=fail,
     )
+
+
+def test_run_export_stops_at_an_outage_and_marks_the_rest_not_tried():
+    ex = run_export(_paper(fail={"s1"}), FakeAutolabel(), CFG, log=lambda m: None)
+    assert ex.sessions == []
+    assert ex.failed == [
+        ("s1", "paperctl sessions export timed out after 300s"),
+        ("s2", "not tried: export service unreachable"),
+        ("s3", "not tried: export service unreachable"),
+    ]
+    assert "1 session exports failed" not in problems(
+        {"failed": ex.failed, "sessions": 0, "outcome_unknown": 0}
+    )
+
+
+def test_run_export_pauses_after_each_fetch_but_not_after_a_cache_hit(tmp_path):
+    paper = _paper()
+    naps: list[float] = []
+    run_export(
+        paper, FakeAutolabel(), PAUSED, log=lambda m: None, cache_dir=tmp_path, sleep=naps.append
+    )
+    assert paper.exported == ["s1", "s2", "s3"] and naps == [1.0, 1.0, 1.0]
+    paper2 = _paper()
+    naps2: list[float] = []
+    run_export(
+        paper2, FakeAutolabel(), PAUSED, log=lambda m: None, cache_dir=tmp_path, sleep=naps2.append
+    )
+    assert paper2.exported == ["s3"] and naps2 == [1.0]  # s3 has no record, so it is never cached
 
 
 def test_run_export_continues_past_a_failed_export_and_reports_it(tmp_path):

@@ -16,7 +16,8 @@ from .config import Config
 from .export import _write_jsonl, problems
 
 SESSIONS_COLS = (
-    "session_id STRING, title STRING, harness STRING, model STRING, started_at STRING, "
+    "session_id STRING, title STRING, project STRING, harness STRING, model STRING, "
+    "started_at STRING, "
     "status STRING, turn_count INT, cost_usd DOUBLE, has_outcome BOOLEAN"
 )
 TURNS_COLS = (
@@ -77,6 +78,43 @@ def load_statements(cfg: Config) -> list[str]:
     ]
 
 
+def _labels_by(cfg: Config, dim: str) -> str:
+    """One row per (dimension, label): how many sessions carry the label, out of every session
+    exported for that dimension value. The denominator is every session the labeler saw."""
+    return (
+        f"CREATE OR REPLACE VIEW {cfg.table('labels_by_' + dim)} AS "
+        f"WITH totals AS (SELECT {dim} AS {dim}, COUNT(*) AS sessions "
+        f"FROM {cfg.table('sessions')} GROUP BY {dim}), "
+        f"hits AS (SELECT s.{dim} AS {dim}, l.label, COUNT(DISTINCT s.session_id) AS "
+        f"sessions_with_label FROM {cfg.table('sessions')} s "
+        f"JOIN {cfg.table('labels')} l ON l.session_id = s.session_id "
+        f"GROUP BY s.{dim}, l.label) "
+        f"SELECT h.{dim}, h.label, h.sessions_with_label, t.sessions, "
+        f"ROUND(h.sessions_with_label / t.sessions, 3) AS rate "
+        f"FROM hits h JOIN totals t ON h.{dim} <=> t.{dim}"
+    )
+
+
+def view_statements(cfg: Config) -> list[str]:
+    """The questions Act 2 asks of the labels, as views over the synced tables."""
+    return [
+        _labels_by(cfg, "model"),
+        _labels_by(cfg, "project"),
+        f"CREATE OR REPLACE VIEW {cfg.table('labels_by_week')} AS "
+        f"SELECT date_trunc('week', to_timestamp(s.started_at)) AS week, l.label, "
+        f"COUNT(DISTINCT s.session_id) AS sessions_with_label "
+        f"FROM {cfg.table('sessions')} s JOIN {cfg.table('labels')} l "
+        f"ON l.session_id = s.session_id GROUP BY 1, 2",
+        f"CREATE OR REPLACE VIEW {cfg.table('corrections')} AS "
+        f"SELECT s.model, s.project, s.started_at, s.title, l.label, t.ordinal, "
+        f"t.user_prompt AS correction, l.session_id, l.turn_id "
+        f"FROM {cfg.table('labels')} l "
+        f"JOIN {cfg.table('turns')} t ON t.session_id = l.session_id AND t.turn_id = l.turn_id "
+        f"JOIN {cfg.table('sessions')} s ON s.session_id = l.session_id "
+        f"WHERE l.label IN ('pushback', 'observation', 'missing-knowledge', 'apology')",
+    ]
+
+
 def _key(inputs) -> str:
     return json.dumps(inputs, sort_keys=True)
 
@@ -125,7 +163,7 @@ def run_sync(
     for name in UPLOADS:
         log(f"upload {name} -> {cfg.volume_path}/{name}")
         db.upload(d / name, f"{cfg.volume_path}/{name}")
-    for stmt in load_statements(cfg):
+    for stmt in load_statements(cfg) + view_statements(cfg):
         log(stmt.split(" AS ")[0][:80])
         db.sql(stmt)
     log(f"rebuild MLflow evaluation dataset {cfg.table('eval_cases')} ({len(records)} cases)")

@@ -13,34 +13,31 @@ Only Paper and Databricks appear on screen. Say "a supervised fine-tune of an op
 - [ ] `uv run tapes-eject spend`: total $____ of $400 (if `spend` cannot read the billing tables, take the number from the trial credit banner)
 - [ ] Browser tabs: Paper console sessions list; Databricks Catalog → agent_sessions; MLflow experiment /Shared/tapes-eject; the endpoint page
 
-## Act 1: Paper labels your agent work (4 min)
+## Act 1: Paper labels your agent work (3 min)
 
 1. Console: the Labels column and filter. "Every session our agents run is captured and labeled."
-2. Terminal: `uv run tapes-eject label pushback`. "It found where engineers pushed back, and wrote nothing."
-3. `uv run tapes-eject label pushback --apply`, then refresh the console so the chips appear.
+2. Terminal: `uv run tapes-eject label pushback --sessions 1000`. "It found where engineers pushed back, and wrote nothing."
+3. `... --apply`, then refresh the console so the chips appear.
 4. Mark one session `regression` in the console, live.
 
-## Act 2: Databricks turns labels into data (4 min)
+## Act 2: Databricks turns labels into data (7 min)
 
 1. `uv run tapes-eject export && uv run tapes-eject count`. The full export ran the day before; this one reads unchanged sessions from `data/cache/` and only fetches what changed, including the session you just marked. Read out the counts. They are real numbers.
 2. `uv run tapes-eject sync`
-3. Catalog → `labels` → History: a new version from this sync. The `training_input` table holds the examples the labels selected; its lineage shows the volume file it was loaded from.
-4. MLflow → Datasets → `eval_cases`: the regression you just marked is a new test case.
+3. Catalog → `labels` → History: a new version from this sync.
+4. `uv run tapes-eject report`. "Which model gets corrected most." Then `--by project --label pushback`, then `--by week`.
+5. SQL editor on `agent_sessions.corrections`: open two rows and read the engineer's words. These are the moments the labels captured.
+6. If a dashboard is prepared: the same views, by model and by week.
 
-## Act 3: Train on Databricks GPUs (3 min, pre-run)
+## Act 3 (optional): The labels select the training data (3 min, pre-run)
 
-1. Jobs → `sft_train` → the finished full run: one H100, the loss curve.
-2. Catalog → `agent_qwen3_4b`: versions and the run that produced each.
-
-## Act 4: Prove it (3 min, pre-run)
-
-1. MLflow → compare `eval-base` and `eval-tuned`: pass rates ____ vs ____.
-2. Open one failed base case: the engineer's correction, the base answer, the tuned answer.
-3. `uv run tapes-eject ask "<a prompt from a regression case>"` against the live endpoint.
+1. `training_input` and the `eval_cases` dataset in MLflow: the labels chose both, and no session is in both.
+2. MLflow → the `sft-...` run and Compare `eval-base` / `eval-tuned`: pass rates ____ vs ____. On a local GPU the runs carry a `-local` suffix.
+3. If an endpoint is up: `uv run tapes-eject ask "<a prompt from a regression case>"`.
 
 ## Close (1 min)
 
-"Paper labels your agent work. Databricks turns the labels into datasets, evals, and models."
+"Paper labels your agent work. Databricks turns the labels into answers: which model, which project, which week, and, when you want it, a model trained on the sessions that went well."
 
 ## After
 

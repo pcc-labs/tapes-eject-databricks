@@ -34,6 +34,7 @@ class Config:
     sample_sessions: int = 200
     max_turns: int = 150
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    export_pause: float = 1.0  # seconds between export requests; Paper's export dislikes bursts
     experiment: str = "/Shared/tapes-eject"
     data_dir: Path = Path("data")
 
@@ -73,6 +74,7 @@ def load(env: dict[str, str] | None = None) -> Config:
         max_output_tokens=int(
             env.get("TAPES_EJECT_MAX_OUTPUT_TOKENS") or DEFAULT_MAX_OUTPUT_TOKENS
         ),
+        export_pause=float(env.get("TAPES_EJECT_EXPORT_PAUSE") or 1.0),
     )
 
 

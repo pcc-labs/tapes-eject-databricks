@@ -3,7 +3,7 @@ import json
 import pytest
 
 from tapes_eject.config import load
-from tapes_eject.sync import load_statements, run_sync, setup_statements
+from tapes_eject.sync import load_statements, run_sync, setup_statements, view_statements
 
 
 def cfg(tmp_path):
@@ -17,6 +17,19 @@ def test_setup_creates_schema_volume_and_tables(tmp_path):
     assert "CREATE VOLUME IF NOT EXISTS demo.agent_sessions.raw" in sql
     for table in ("sessions", "turns", "labels"):
         assert f"CREATE TABLE IF NOT EXISTS demo.agent_sessions.{table}" in sql
+
+
+def test_views_answer_by_model_project_and_week_with_every_session_as_denominator(tmp_path):
+    views = view_statements(cfg(tmp_path))
+    names = [v.split(" AS ")[0].rsplit(".", 1)[-1] for v in views]
+    assert names == ["labels_by_model", "labels_by_project", "labels_by_week", "corrections"]
+    by_model = views[0]
+    assert "COUNT(*) AS sessions" in by_model and "GROUP BY model" in by_model
+    assert "COUNT(DISTINCT s.session_id) AS sessions_with_label" in by_model
+    assert "h.model <=> t.model" in by_model  # a NULL model still gets a row
+    assert "date_trunc('week', to_timestamp(s.started_at))" in views[2]
+    assert "t.user_prompt AS correction" in views[3] and "'pushback'" in views[3]
+    assert "project STRING" in "\n".join(setup_statements(cfg(tmp_path)))
 
 
 def test_labels_merge_deletes_rows_missing_from_the_export(tmp_path):
@@ -130,7 +143,8 @@ def test_run_sync_creates_before_upload_then_loads_and_builds_eval(tmp_path):
     db, datasets = FakeDb(), FakeDatasets()
     got = run_sync(cfg(tmp_path), db, datasets, log=lambda m: None)
     kinds = [k for k, _ in db.log]
-    assert kinds == ["sql"] * 5 + ["upload"] * 4 + ["sql"] * 4  # create, then upload, then load
+    # create, then upload, then the four loads and the four views
+    assert kinds == ["sql"] * 5 + ["upload"] * 4 + ["sql"] * 8
     assert ("upload", "/Volumes/demo/agent_sessions/raw/training.jsonl") in db.log
     assert datasets.calls == [
         ("get", "demo.agent_sessions.eval_cases"),
