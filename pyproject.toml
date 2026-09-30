@@ -14,9 +14,24 @@ tapes-eject = "tapes_eject.cli:main"
 
 [dependency-groups]
 dev = ["pytest", "ruff"]
+# Acts 3 and 4 on a local NVIDIA GPU instead of AI Runtime: `uv sync --group local`
+local = [
+  "torch>=2.8",
+  "transformers>=4.57",
+  "datasets>=3.0",
+  "peft>=0.17",
+  "trl>=0.24",
+  "accelerate>=1.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
 
 [tool.uv.sources]
 autolabel-cassette = { git = "https://github.com/pcc-labs/autolabel-cassette", rev = "1a43a65b969a40cc41892f451a13850905e919cb" }
+torch = { index = "pytorch-cu128" }
 
 [build-system]
 requires = ["hatchling"]

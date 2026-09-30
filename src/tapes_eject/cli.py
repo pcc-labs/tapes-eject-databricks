@@ -144,6 +144,11 @@ def cmd_unserve(cfg: config.Config, args: argparse.Namespace) -> int:
 
 
 def cmd_ask(cfg: config.Config, args: argparse.Namespace) -> int:
+    if args.url:  # train/local_serve.py on a local GPU instead of Model Serving
+        from .local_gpu import ask_local
+
+        print(ask_local(args.url, args.prompt))
+        return 0
     from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
 
     res = Databricks(cfg).w.serving_endpoints.query(
@@ -199,6 +204,9 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("unserve", help="delete the endpoint").set_defaults(fn=cmd_unserve)
     ask = sub.add_parser("ask", help="send one prompt to the endpoint")
     ask.add_argument("prompt")
+    ask.add_argument(
+        "--url", help="a local train/local_serve.py instead, e.g. http://127.0.0.1:8081"
+    )
     ask.set_defaults(fn=cmd_ask)
     sp = sub.add_parser("spend", help="Databricks spend since a date, from system billing tables")
     sp.add_argument("--since", default="2026-09-29")
