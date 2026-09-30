@@ -19,6 +19,8 @@ def test_load_defaults_and_names():
     assert cfg.autolabel_url == "http://h:9996/v1/cassettes/autolabel"
     assert cfg.profile == "tapes-eject"
     assert cfg.sample_sessions == 200 and cfg.max_turns == 150
+    assert cfg.max_output_tokens == 400_000
+    assert load({**BASE, "TAPES_EJECT_MAX_OUTPUT_TOKENS": "50000"}).max_output_tokens == 50_000
     assert cfg.experiment == "/Shared/tapes-eject"
     assert cfg.org_slug is None
 
