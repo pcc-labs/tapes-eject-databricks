@@ -155,6 +155,29 @@ uv run tapes-eject ask "Add a --dry-run flag to the export command"
 uv run tapes-eject unserve                            # delete it when the demo is over
 ```
 
+## Acts 3 and 4 on a local GPU
+
+If the workspace has no GPU quota (Free Edition, or a trial that hasn't been granted any), the GPU work can run on a local NVIDIA card instead. Databricks still holds the data, the evaluation dataset, the experiment, and the scores, so the screens in the runbook are the same; only the compute moves. Tested on an RTX 5090 (32 GB).
+
+```bash
+uv sync --group local                                              # torch (CUDA 12.8), trl, peft
+uv run --group local python train/local_sft.py --max-steps 5      # smoke run; LoRA by default
+uv run --group local python train/local_sft.py --max-steps 0      # full run: 2 epochs
+uv run --group local python train/local_eval.py --limit 5         # base vs tuned, smoke run
+uv run --group local python train/local_eval.py                   # every case
+```
+
+- **`local_sft.py`** reads `data/training.jsonl` (written by `sync`), fine-tunes with LoRA, merges the adapter, and saves full weights to `models/agent_qwen3_4b/`. Same data, hyperparameters, and run naming as the AI Runtime notebook, with `-local` on the run name. A full fine-tune of a 4B model needs about 48 GB with optimizer states, so `--method full` is only for larger cards.
+- **`local_eval.py`** scores the base and tuned models on the `eval_cases` dataset with the same guideline judge as the notebook. The judge is a Databricks-hosted model and works from a laptop; the `eval-base-local` and `eval-tuned-local` runs land in the experiment for **Compare**, beside any runs from the AI Runtime job. Both paths read the same `sync` output and write to the same experiment, so either can be used at any time and neither needs the other.
+- **Serving.** Free Edition has no GPU endpoints, so instead of `serve`:
+
+  ```bash
+  uv run --group local python train/local_serve.py                 # http://127.0.0.1:8081, one request at a time
+  uv run tapes-eject ask --url http://127.0.0.1:8081 "Add a --dry-run flag to the export command"
+  ```
+
+The tuned weights stay on local disk and are not registered in Unity Catalog. If the workspace later gets GPU quota, the bundle jobs run unchanged and nothing local needs to change.
+
 ## Commands
 
 | Command | What it does |
@@ -164,7 +187,7 @@ uv run tapes-eject unserve                            # delete it when the demo 
 | `export [--evidence] [--allow-partial]` | Pulls labeled sessions and their labels from Paper into `data/` |
 | `count` | Shows how much training and eval data the labels select |
 | `sync [--force]` | Loads `data/` into Unity Catalog and the MLflow evaluation dataset |
-| `serve --version N` / `unserve` / `ask "<prompt>"` | Creates, deletes, and queries the fine-tuned model's endpoint |
+| `serve --version N` / `unserve` / `ask "<prompt>"` | Creates, deletes, and queries the fine-tuned model's endpoint; `ask --url` queries a local `train/local_serve.py` instead |
 | `spend [--since YYYY-MM-DD]` | Shows Databricks spend from the system billing tables |
 
 Run any of these as `uv run tapes-eject <command>`. The unit tests run with `uv run pytest`.

@@ -7,7 +7,9 @@ Only Paper and Databricks appear on screen. Say "a supervised fine-tune of an op
 - [ ] `uv run tapes-eject doctor`: all `ok`
 - [ ] The autolabel cassette is running with `TYPESAFE_API_KEY` set
 - [ ] `export` (fills `data/cache/`, so the live re-export is fast), `sync`, and the full `sft_train` and `eval_models` runs are done. Note the model version and both pass rates here: base ____ / tuned ____
+  - No GPU quota in the workspace? Run `train/local_sft.py --max-steps 0` and `train/local_eval.py` on the local GPU instead (README, "Acts 3 and 4 on a local GPU"). The runs land in the same experiment.
 - [ ] `uv run tapes-eject serve --version <v>`, then `ask` once to warm it. Leave it up until the demo.
+  - Local GPU: `train/local_serve.py` in its own terminal, and `ask --url http://127.0.0.1:8081` in Act 4.
 - [ ] `uv run tapes-eject spend`: total $____ of $400 (if `spend` cannot read the billing tables, take the number from the trial credit banner)
 - [ ] Browser tabs: Paper console sessions list; Databricks Catalog → agent_sessions; MLflow experiment /Shared/tapes-eject; the endpoint page
 

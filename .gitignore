@@ -6,3 +6,4 @@ data/
 *.egg-info/
 resources/*.src/
 .superpowers/
+models/
