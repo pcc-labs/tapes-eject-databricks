@@ -57,7 +57,7 @@ databricks catalogs list --profile tapes-eject     # pick a catalog you can crea
 Keep it running in its own terminal for the whole demo.
 
 ```bash
-git clone https://github.com/pcc-labs/autolabel-cassette ../autolabel-cassette
+git clone https://github.com/papercomputeco/autolabel-cassette ../autolabel-cassette
 cd ../autolabel-cassette
 git checkout 1a43a65b969a40cc41892f451a13850905e919cb   # the revision pinned in pyproject.toml
 uv sync

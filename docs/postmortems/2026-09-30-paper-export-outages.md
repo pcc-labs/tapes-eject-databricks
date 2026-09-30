@@ -58,8 +58,12 @@ What is not covered here, and would prevent it for every client rather than this
 - **The autolabel cassette:** treat "cannot parse" as "known empty", not "missing", so it stops re-exporting the same sessions; validate a downloaded record before keeping it; lower the default export parallelism, or read from core's traces endpoint the way its HEAD revision already does when `CASSETTE_CORE_URL` is set. Once autolabel ships as a Paper feature, none of this runs on a laptop (#5).
 - **paperctl:** `sessions export` exited 0 after writing a truncated response at least once. A partial write should be an error.
 
+## What the cassette's own history says
+
+The repo moved to `papercomputeco/autolabel-cassette` on 2026-09-30, with two commits past the revision this repo pins. Commit `5363662`, "labels that appear on their own, read in batches from a watermark", states the failure directly: "A session large enough to OOM the export cassette was, here, read whole into memory and cached." That revision lists a session's turn headers, fetches only the turns past a watermark one request at a time, and labels them in batches of 20. It also adds the worker that labels sessions on its own, with a verdict ledger so runs never re-judge a turn, and commit `4b5d0d8` retires the one-box deploy because production is now the cassette catalog entry in cloud (papercomputeco/cloud#271). So the export cassette's memory limit was a known mode, the per-turn read is the upstream answer, and the local run of an old revision is what put a whole-session export stream in front of it.
+
 ## What we would do differently
 
 - Probe a new data path with a handful of requests and watch the service before running it over hundreds of sessions.
-- Read the newest revision of a dependency before pinning an old one. The fix was already in the cassette's HEAD, in a comment.
+- Read the newest revision of a dependency before pinning an old one. The fix was already at the cassette's HEAD, and two commits later the whole failure mode was described and worked around upstream.
 - Stop at the first outage. Every retry into a down service extended the outage and produced corrupt files.

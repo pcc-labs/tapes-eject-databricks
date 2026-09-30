@@ -30,7 +30,7 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.uv.sources]
-autolabel-cassette = { git = "https://github.com/pcc-labs/autolabel-cassette", rev = "1a43a65b969a40cc41892f451a13850905e919cb" }
+autolabel-cassette = { git = "https://github.com/papercomputeco/autolabel-cassette", rev = "1a43a65b969a40cc41892f451a13850905e919cb" }
 torch = { index = "pytorch-cu128" }
 
 [build-system]

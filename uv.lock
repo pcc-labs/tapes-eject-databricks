@@ -229,7 +229,7 @@ wheels = [
 [[package]]
 name = "autolabel-cassette"
 version = "0.1.0"
-source = { git = "https://github.com/pcc-labs/autolabel-cassette?rev=1a43a65b969a40cc41892f451a13850905e919cb#1a43a65b969a40cc41892f451a13850905e919cb" }
+source = { git = "https://github.com/papercomputeco/autolabel-cassette?rev=1a43a65b969a40cc41892f451a13850905e919cb#1a43a65b969a40cc41892f451a13850905e919cb" }
 
 [[package]]
 name = "azure-core"
@@ -3960,7 +3960,7 @@ local = [
 
 [package.metadata]
 requires-dist = [
-    { name = "autolabel-cassette", git = "https://github.com/pcc-labs/autolabel-cassette?rev=1a43a65b969a40cc41892f451a13850905e919cb" },
+    { name = "autolabel-cassette", git = "https://github.com/papercomputeco/autolabel-cassette?rev=1a43a65b969a40cc41892f451a13850905e919cb" },
     { name = "databricks-sdk", specifier = ">=0.102.0" },
     { name = "mlflow", extras = ["databricks"], specifier = ">=3.12" },
 ]
