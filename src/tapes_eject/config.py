@@ -16,6 +16,8 @@ REGRESSION = "regression"
 NO_OUTCOME = "no-outcome"
 
 DEFAULT_AUTOLABEL_URL = "http://127.0.0.1:9996/v1/cassettes/autolabel"
+DEFAULT_TAPES_API = "http://127.0.0.1:18081"
+SOURCES = ("tapes", "paper")
 # Sessions whose rollup shows more output tokens than this are never exported. Turn count
 # alone misses a session of three turns whose tool output runs to hundreds of megabytes, and
 # exporting one of those can overload Paper's export service.
@@ -30,6 +32,8 @@ class Config:
     schema: str = "agent_sessions"
     volume: str = "raw"
     autolabel_url: str = DEFAULT_AUTOLABEL_URL
+    source: str = "tapes"  # tapes: a local tapes stack; paper: a Paper org through paperctl
+    tapes_api: str = DEFAULT_TAPES_API
     org_slug: str | None = None
     sample_sessions: int = 200
     max_turns: int = 150
@@ -41,6 +45,10 @@ class Config:
 
     def table(self, name: str) -> str:
         return f"{self.catalog}.{self.schema}.{name}"
+
+    @property
+    def labels_path(self) -> Path:
+        return self.data_dir / "local_labels.jsonl"
 
     @property
     def volume_path(self) -> str:
@@ -69,6 +77,8 @@ def load(env: dict[str, str] | None = None) -> Config:
         warehouse_id=env["DATABRICKS_WAREHOUSE_ID"],
         profile=env.get("DATABRICKS_CONFIG_PROFILE") or "tapes-eject",
         autolabel_url=(env.get("AUTOLABEL_URL") or DEFAULT_AUTOLABEL_URL).rstrip("/"),
+        source=_source(env.get("TAPES_EJECT_SOURCE")),
+        tapes_api=(env.get("TAPES_API") or DEFAULT_TAPES_API).rstrip("/"),
         org_slug=env.get("PAPER_ORG_SLUG") or None,
         sample_sessions=int(env.get("TAPES_EJECT_SAMPLE_SESSIONS") or 200),
         max_turns=int(env.get("TAPES_EJECT_MAX_TURNS") or 150),
@@ -80,6 +90,13 @@ def load(env: dict[str, str] | None = None) -> Config:
             s.strip() for s in (env.get("TAPES_EJECT_SKIP_SESSIONS") or "").split(",") if s.strip()
         ),
     )
+
+
+def _source(value: str | None) -> str:
+    value = (value or "tapes").strip().lower()
+    if value not in SOURCES:
+        raise SystemExit(f"TAPES_EJECT_SOURCE must be one of {SOURCES}, not {value!r}")
+    return value
 
 
 def ping_url(base: str) -> str:

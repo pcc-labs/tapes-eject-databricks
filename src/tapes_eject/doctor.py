@@ -7,6 +7,7 @@ import subprocess
 from typing import Callable
 
 from .config import Config
+from .tapes import Tapes, read_labels
 
 Check = tuple[str, Callable[[], str]]
 
@@ -62,11 +63,27 @@ def _mlflow_datasets() -> str:
     return f"mlflow {mlflow.__version__}"
 
 
+def _tapes(cfg: Config) -> str:
+    n = len(Tapes(cfg.tapes_api, cfg.labels_path).sessions(limit=200))
+    if not n:
+        raise RuntimeError(f"{cfg.tapes_api} has no sessions: import history with tapes first")
+    return f"{cfg.tapes_api}, {n}{'+' if n == 200 else ''} sessions"
+
+
+def _local_labels(cfg: Config) -> str:
+    rows = read_labels(cfg.labels_path)
+    return f"{len(rows)} in {cfg.labels_path}" if rows else "none yet; run `tapes-eject label`"
+
+
+def source_checks(cfg: Config) -> list[Check]:
+    if cfg.source == "paper":
+        return [("paperd", _paperd), ("paper org", lambda: cfg.org_slug or _paper_org())]
+    return [("tapes", lambda: _tapes(cfg)), ("labels", lambda: _local_labels(cfg))]
+
+
 def checks(cfg: Config) -> list[Check]:
     w = lambda: _workspace(cfg.profile)  # noqa: E731
-    return [
-        ("paperd", _paperd),
-        ("paper org", lambda: cfg.org_slug or _paper_org()),
+    return source_checks(cfg) + [
         ("databricks auth", lambda: w().current_user.me().user_name),
         ("sql warehouse", lambda: str(w().warehouses.get(cfg.warehouse_id).state)),
         ("catalog", lambda: w().catalogs.get(cfg.catalog).name),

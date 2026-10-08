@@ -1,13 +1,16 @@
 # tapes-eject-databricks
 
-Load your coding-agent sessions into Databricks, ask questions of them in SQL, and optionally fine-tune a model on them.
+Load your Codex and Claude Code sessions into Databricks, ask questions of them in SQL, and optionally fine-tune a model on them.
 
-Sessions captured by [Paper](https://papercompute.com) carry labels: `pushback` where an engineer corrected the agent, `apology` where the agent backtracked, `golden` for sessions worth learning from, `regression` for known failures. This repo syncs sessions and labels into Unity Catalog tables, builds views that answer "which model gets corrected most, in which project, and how is that changing," and uses the same labels to pick training data and eval cases for a fine-tune scored with MLflow.
+[tapes](https://github.com/pcc-labs/tapes-test) imports your agent history into a database on your laptop. This repo reads it from there, labels the turns where you corrected the agent, syncs sessions and labels into Unity Catalog, and builds views that answer "which model gets corrected most, in which project, and how is that changing." The same labels pick training data and eval cases for a fine-tune scored with MLflow.
 
 ## How it works
 
 ```
-Paper sessions + labels
+~/.codex/sessions, ~/.claude/projects
+  └─ tapes-skills-demo    import history into local tapes (Docker)
+  └─ tapes-eject label    find pushback and apology turns
+  └─ tapes-eject mark     mark sessions golden or regression by hand
   └─ tapes-eject export   sessions, turns, labels -> data/
   └─ tapes-eject sync     -> Unity Catalog tables + views, MLflow eval dataset
   └─ tapes-eject report   which model / project / week carries each label
@@ -17,26 +20,43 @@ Paper sessions + labels
 
 Labels decide the data:
 
-- **Training examples:** sessions that produced an outcome and carry no correction or failure label (`pushback`, `apology`, `missing-knowledge`, `model-error`, `observation`, `regression`). Four in five `golden` sessions are training examples too.
-- **Eval cases:** every turn an engineer corrected, every `regression` session, and the remaining one in five `golden` sessions. A session is never in both sets.
+- **`pushback`:** a turn where you corrected the agent ("no, ...", "don't ...", "you deleted ..."). Found by `label`.
+- **`apology`:** a turn where the agent backtracked ("you're right", "my mistake"). Found by `label`.
+- **`golden`:** a session worth learning from. Set by hand with `mark`.
+- **`regression`:** a session that went wrong. Set by hand with `mark`.
+
+Sessions with no correction or failure label become training examples, along with four in five `golden` sessions. Every corrected turn, every `regression` session, and the remaining `golden` sessions become eval cases. A session is never in both sets.
 
 ## Requirements
 
 - Python 3.11+ and [uv](https://docs.astral.sh/uv/)
-- A Paper account with `paperctl` installed and logged in
+- Docker, running
+- Codex or Claude Code history on this machine
 - A Databricks workspace with Unity Catalog, a SQL warehouse, and a catalog you can create a schema in
 - The [Databricks CLI](https://docs.databricks.com/dev-tools/cli/install.html)
 - For fine-tuning: serverless GPU (AI Runtime) in the workspace, or a local NVIDIA GPU (tested on a 32 GB RTX 5090). Databricks Free Edition has no GPUs; a free trial workspace does.
 
 ## Setup
 
+### 1. Import your history into tapes
+
+Install [tapes-test](https://github.com/pcc-labs/tapes-test) and run it once. It starts a local tapes stack in Docker on port 18081 and imports the last 30 days of Codex and Claude Code sessions.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/pcc-labs/tapes-test/main/install.sh | sh
+tapes-skills-demo check
+tapes-skills-demo --ollama        # or export OPENAI_API_KEY and drop --ollama
+tapes-skills-demo sessions        # what was imported
+```
+
+`tapes-skills-demo` also suggests skills written from your history. That part is optional here: answer `none` when it asks which to write. Use `--since-days 0` to import everything, and run it again later to pick up new sessions.
+
+### 2. Install this repo and connect Databricks
+
 ```bash
 git clone https://github.com/pcc-labs/tapes-eject-databricks
 cd tapes-eject-databricks
 uv sync
-
-paperctl login
-paperctl status                    # expect "auth: healthy"
 
 databricks auth login --host https://<workspace>.cloud.databricks.com --profile tapes-eject
 databricks warehouses list --profile tapes-eject      # copy a warehouse id
@@ -46,22 +66,26 @@ cp .env.example .env               # set TAPES_EJECT_CATALOG and DATABRICKS_WARE
 uv run tapes-eject doctor
 ```
 
-`doctor` checks paperd, your Paper org, Databricks auth, the warehouse, the catalog, and MLflow. Every line should say `ok`.
+`doctor` checks that tapes answers on `TAPES_API`, how many labels you have, Databricks auth, the warehouse, the catalog, and MLflow. Every line should say `ok`.
 
 ## Usage
 
-### 1. Label sessions
-
-Add labels in the Paper console: mark a few good sessions `golden`, and failures `regression`. Corrections (`pushback`) are what the reports and evals are built around.
-
-If you run an autolabel service, `label` finds a label across recent sessions and can write it back to Paper:
+### 1. Label your sessions
 
 ```bash
-uv run tapes-eject label pushback --sessions 500            # report matches only
-uv run tapes-eject label pushback --sessions 500 --apply    # write them to Paper
+uv run tapes-eject label                 # scan the 200 newest sessions
+uv run tapes-eject label pushback --show 20
 ```
 
-Set `AUTOLABEL_URL` in `.env` to point at it.
+`label` matches patterns, so it is fast, free, and sometimes wrong. It prints the evidence for each label: read it. Labels are kept in `data/local_labels.jsonl`. Re-running `label` replaces its own labels on the sessions it scans and never touches the ones you set by hand.
+
+```bash
+uv run tapes-eject mark golden <session-id> <session-id>     # sessions worth learning from
+uv run tapes-eject mark regression <session-id>              # sessions that went wrong
+uv run tapes-eject mark pushback <session-id> --remove       # drop a wrong label
+```
+
+Session ids come from `tapes-skills-demo sessions` or from `label`'s output.
 
 ### 2. Export and sync
 
@@ -71,13 +95,13 @@ uv run tapes-eject count      # how many training examples and eval cases the la
 uv run tapes-eject sync       # tables, views, and the MLflow eval dataset
 ```
 
-`export` caches every session in `data/cache/`, so a re-run only fetches sessions that changed. It skips sessions over the size caps in `.env`. Text is redacted for common secret shapes before it is written. Redaction is pattern-based, so check `data/` before syncing it anywhere shared.
+`export` caches every session in `data/cache/`, so a re-run only fetches sessions that changed. It skips sessions over the size caps in `.env`. Text is redacted for common secret shapes before it is written. Redaction is pattern-based, so read `data/` before you sync it.
 
 `sync` creates schema `agent_sessions` in your catalog with:
 
 | Object | Contents |
 |---|---|
-| `sessions`, `turns`, `labels` | The exported rows. Labels removed in Paper are deleted on the next sync. |
+| `sessions`, `turns`, `labels` | The exported rows. Labels you remove locally are deleted on the next sync. |
 | `training_input` | Training examples, one chat per row |
 | `labels_by_model`, `labels_by_project` | Each label's rate over every exported session for that model or project |
 | `labels_by_week` | Labeled sessions per week |
@@ -137,9 +161,10 @@ Tuned weights are saved to `models/agent_qwen3_4b/` and are not registered in Un
 
 | Command | What it does |
 |---|---|
-| `doctor` | Checks paperd, the Paper org, and the Databricks workspace |
-| `label <name> [--apply]` | Finds a label through an autolabel service; `--apply` writes it to Paper |
-| `export [--allow-partial]` | Pulls sessions and labels from Paper into `data/` |
+| `doctor` | Checks tapes and the Databricks workspace |
+| `label [name]` | Finds `pushback` and `apology` turns in recent sessions |
+| `mark <label> <session-id>... [--remove]` | Sets or removes a label on whole sessions |
+| `export [--allow-partial]` | Pulls sessions, turns, and labels into `data/` |
 | `count` | Shows how much training and eval data the labels select |
 | `sync [--force]` | Loads `data/` into Unity Catalog and the MLflow eval dataset |
 | `report [--by model\|project\|week] [--label L]` | Prints a label view |
@@ -155,18 +180,21 @@ All settings live in `.env`; see `.env.example`.
 | `TAPES_EJECT_CATALOG` | Catalog to create `agent_sessions` in (required) |
 | `DATABRICKS_WAREHOUSE_ID` | SQL warehouse that runs the loads (required) |
 | `DATABRICKS_CONFIG_PROFILE` | CLI profile, default `tapes-eject` |
-| `PAPER_ORG_SLUG` | Paper org to read; default is paperctl's active org |
+| `TAPES_API` | The tapes API to read sessions from, default `http://127.0.0.1:18081` |
 | `TAPES_EJECT_SAMPLE_SESSIONS` | Unlabeled recent sessions to export alongside labeled ones. They are the denominator for the per-model rates. |
 | `TAPES_EJECT_MAX_TURNS`, `TAPES_EJECT_MAX_OUTPUT_TOKENS` | Skip sessions larger than this |
 | `TAPES_EJECT_SKIP_SESSIONS` | Comma-separated session ids never to export |
+| `TAPES_EJECT_SOURCE` | `tapes` (default). `paper` reads a [Paper](https://papercompute.com) org through `paperctl` instead, with labels set in the Paper console |
 
 ## Troubleshooting
 
+- **`doctor` says tapes could not be reached.** Start Docker, then run `tapes-skills-demo` again. It restarts the stack and only imports what is new.
+- **`doctor` says tapes has no sessions.** Run `tapes-skills-demo check` to see which history it finds. Pass `--codex-root` or `--claude-root` if yours lives elsewhere.
 - **`bundle run` fails with `RESOURCE_EXHAUSTED ... GPU quota ... is 0`.** The workspace has no serverless GPU. Use a trial workspace with GPU access, or the local GPU path.
 - **`bundle run` says "unknown resource".** Run `databricks bundle deploy` first.
 - **`sync` says "refusing to sync".** The export was partial or produced no eval cases. Read `data/report.json`.
-- **`sft_train` fails with "only N training examples".** Label more sessions `golden`, then run `export` and `sync` again.
-- **Export fails with "could not reach".** Paper's export is not answering. Wait and re-run; cached sessions are not fetched again. If one very large session is the cause, lower `TAPES_EJECT_MAX_OUTPUT_TOKENS` or add its id to `TAPES_EJECT_SKIP_SESSIONS`.
+- **`sft_train` fails with "only N training examples".** Import more history (`tapes-skills-demo --since-days 0`), or `mark` more sessions `golden`, then run `export` and `sync` again.
+- **Export is slow or times out on one session.** Lower `TAPES_EJECT_MAX_OUTPUT_TOKENS` or add its id to `TAPES_EJECT_SKIP_SESSIONS`. Cached sessions are not fetched again.
 - **`spend` says the billing tables are unavailable.** Reading `system.billing` needs an account admin grant. Use Account console, Usage.
 
 When you are done, run `uv run tapes-eject unserve` and check `uv run tapes-eject spend`.
