@@ -1,0 +1,53 @@
+[project]
+name = "tapes-eject-databricks"
+version = "0.1.0"
+description = "Paper labels to Databricks datasets, evals, and a fine-tuned model"
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = [
+  "databricks-sdk>=0.102.0",
+  "mlflow[databricks]>=3.12",
+]
+
+[project.scripts]
+tapes-eject = "tapes_eject.cli:main"
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
+# Acts 3 and 4 on a local NVIDIA GPU instead of AI Runtime: `uv sync --group local`
+local = [
+  "torch>=2.8",
+  "transformers>=4.57",
+  "datasets>=3.0",
+  "peft>=0.17",
+  "trl>=0.24",
+  "accelerate>=1.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tapes_eject"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+# Databricks notebooks: cells, dbutils, and imports after setup code
+extend-exclude = ["train/sft_train.py", "train/eval_models.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]
